@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Cursor & WhatsApp Sidebar",
+  "version": "1.0",
+  "description": "Change cursor style and start WhatsApp chats from a sidebar.",
+  "permissions": ["scripting", "activeTab"],
+  "host_permissions": ["https://web.whatsapp.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Open Sidebar"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://web.whatsapp.com/*"],
+      "js": ["content.js"],
+      "css": ["sidebar.css"]
+    }
+  ]
+}

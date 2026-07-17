@@ -2,6 +2,24 @@
   const QUEUE_KEY = 'wa_sender_queue';
   const API_SETTINGS_KEY = 'wa_api_settings';
 
+  // Shared across reinjections so old async loops stop when Stop is pressed
+  if (typeof window.__waSenderActiveRun !== 'number') {
+    window.__waSenderActiveRun = 0;
+  }
+
+  function beginSenderRun() {
+    window.__waSenderActiveRun += 1;
+    return window.__waSenderActiveRun;
+  }
+
+  function cancelAllSenderRuns() {
+    window.__waSenderActiveRun += 1;
+  }
+
+  function isSenderRunActive(runId) {
+    return runId === window.__waSenderActiveRun;
+  }
+
   function normalizePhone(number) {
     return String(number).replace(/\D/g, '');
   }
@@ -79,11 +97,17 @@
   }
 
   function createSidebar(forceRebuild = false) {
+    // Kill any leftover loops from a previous injection/sidebar
+    cancelAllSenderRuns();
+
+    const currentVersion = chrome.runtime.getManifest().version;
     const existingSidebar = document.getElementById('wa-cursor-sidebar');
     if (existingSidebar) {
       const isCurrent =
+        existingSidebar.dataset.version === currentVersion &&
         existingSidebar.querySelector('.wa-tabs') &&
-        existingSidebar.querySelector('#wa-not-available-url');
+        existingSidebar.querySelector('#wa-not-available-url') &&
+        typeof existingSidebar.querySelector === 'function';
       if (!forceRebuild && isCurrent) {
         return existingSidebar;
       }
@@ -93,11 +117,12 @@
     const apiSettings = loadApiSettings();
     const sidebar = document.createElement('div');
     sidebar.id = 'wa-cursor-sidebar';
+    sidebar.dataset.version = currentVersion;
     sidebar.innerHTML = `
       <div class="wa-sidebar-header">
         <div class="wa-sidebar-title">
           <span>Store Sync WhatsApp Sender</span>
-          <span class="wa-version">v${chrome.runtime.getManifest().version}</span>
+          <span class="wa-version">v${currentVersion}</span>
         </div>
         <button id="wa-sidebar-close">&times;</button>
       </div>
@@ -132,7 +157,7 @@
           </div>
         </div>
         <div id="wa-send-status" class="wa-send-status"></div>
-        <button id="wa-start-whatsapp-chat">Start Sending Messages</button>
+        <button id="wa-start-whatsapp-chat" data-label-manual="Start Sending Messages" data-label-api="Start">Start Sending Messages</button>
         <button id="wa-stop-whatsapp-chat" style="display:none; background:#e74c3c; color:white;">Stop</button>
       </div>
     `;
@@ -152,6 +177,19 @@
     let stopSending = false;
     let activeTimeout = null;
     let activeTab = 'manual';
+    let activeRunId = 0;
+
+    function isActive() {
+      return !stopSending && isSenderRunActive(activeRunId);
+    }
+
+    function updateStartButtonLabel() {
+      const startBtn = document.getElementById('wa-start-whatsapp-chat');
+      if (!startBtn) return;
+      startBtn.textContent = activeTab === 'api'
+        ? (startBtn.dataset.labelApi || 'Start')
+        : (startBtn.dataset.labelManual || 'Start Sending Messages');
+    }
 
     sidebar.querySelectorAll('.wa-tab').forEach((tabBtn) => {
       tabBtn.addEventListener('click', () => {
@@ -161,21 +199,30 @@
         sidebar.querySelectorAll('.wa-tab-panel').forEach((panel) => {
           panel.style.display = panel.dataset.panel === activeTab ? 'block' : 'none';
         });
+        updateStartButtonLabel();
       });
     });
 
+    updateStartButtonLabel();
+
     function setRunning(running) {
-      document.getElementById('wa-stop-whatsapp-chat').style.display = running ? 'inline-block' : 'none';
-      document.getElementById('wa-start-whatsapp-chat').disabled = running;
+      const startBtn = document.getElementById('wa-start-whatsapp-chat');
+      const stopBtn = document.getElementById('wa-stop-whatsapp-chat');
+      if (!startBtn || !stopBtn) return;
+      stopBtn.style.display = running ? 'inline-block' : 'none';
+      startBtn.disabled = !!running;
+      startBtn.setAttribute('aria-disabled', running ? 'true' : 'false');
       sidebar.querySelectorAll('.wa-tab').forEach((btn) => {
-        btn.disabled = running;
+        btn.disabled = !!running;
       });
       if (!running) {
-        setSendStatus('');
+        updateStartButtonLabel();
       }
     }
 
     function setSendStatus(text) {
+      // Ignore status updates from cancelled/old runs
+      if (!isActive() && text !== 'Stopped.') return;
       const status = document.getElementById('wa-send-status');
       if (status) {
         status.textContent = text;
@@ -183,12 +230,15 @@
     }
 
     async function countdownSeconds(seconds, getText) {
+      if (!isActive()) return false;
+      setRunning(true);
       for (let remaining = seconds; remaining > 0; remaining -= 1) {
-        if (stopSending) return false;
+        if (!isActive()) return false;
         setSendStatus(getText(remaining));
         await sleep(1000);
+        if (!isActive()) return false;
       }
-      return !stopSending;
+      return isActive();
     }
 
     async function countdownToSending() {
@@ -209,7 +259,7 @@
     async function clickSendWhenReady(timeoutMs = 20000) {
       const started = Date.now();
       while (Date.now() - started < timeoutMs) {
-        if (stopSending) return false;
+        if (!isActive()) return false;
         const sendButton = findSendButton();
         if (sendButton) {
           sendButton.click();
@@ -242,9 +292,10 @@
 
       openChatSameTab(phone, message);
       await sleep(3500);
-      if (stopSending) return false;
+      if (!isActive()) return false;
 
       const sent = await clickSendWhenReady();
+      if (!isActive()) return false;
       setSendStatus(sent ? `Sent to ${number}` : `Send button not found for ${number}`);
       console.log(sent ? `Message sent to ${number}` : `Send button not found for ${number}`);
       return sent;
@@ -257,7 +308,7 @@
 
     async function processManualQueue(state) {
       while (state.index < state.numbers.length) {
-        if (stopSending) {
+        if (!isActive()) {
           clearQueue();
           setRunning(false);
           return;
@@ -265,8 +316,8 @@
 
         saveQueue(state);
         const number = state.numbers[state.index];
-        const ok = await sendOneMessage(number, state.message);
-        if (stopSending || !ok && stopSending) {
+        await sendOneMessage(number, state.message);
+        if (!isActive()) {
           clearQueue();
           setRunning(false);
           return;
@@ -287,31 +338,41 @@
 
       clearQueue();
       setRunning(false);
-      setSendStatus('All messages sent.');
+      if (isActive()) {
+        setSendStatus('All messages sent.');
+      }
     }
 
     async function processApiQueue(state) {
-      while (!stopSending) {
+      while (isActive()) {
         saveQueue(state);
         setSendStatus('Fetching next message...');
 
-        let payload;
+        let payload = null;
         try {
           payload = await apiRequest('GET', state.fetchUrl);
         } catch (err) {
-          if (stopSending) break;
-          setSendStatus(`${err.message || 'Fetch failed'}. Retrying...`);
-          const readyToRetry = await waitBeforeNext(state.minDelay, state.maxDelay);
+          if (!isActive()) break;
+          const msg = err.message || 'Fetch failed';
+          const readyToRetry = await countdownSeconds(
+            Math.ceil((1000 + getRandomDelay(state.minDelay, state.maxDelay)) / 1000),
+            (remaining) => `${msg}. Retrying in ${remaining}s`
+          );
           if (!readyToRetry) break;
           continue;
         }
 
+        if (!isActive()) break;
+
         const item = payload?.data;
         if (!payload?.success || !item?._id || !item?.number || !item?.message) {
-          setSendStatus('No messages found.');
-          clearQueue();
-          setRunning(false);
-          return;
+          if (!isActive()) break;
+          const readyToRetry = await countdownSeconds(
+            Math.ceil((1000 + getRandomDelay(state.minDelay, state.maxDelay)) / 1000),
+            (remaining) => `No messages found. Retrying in ${remaining}s`
+          );
+          if (!readyToRetry) break;
+          continue;
         }
 
         state.currentId = item._id;
@@ -320,25 +381,37 @@
         saveQueue(state);
 
         const sent = await sendOneMessage(item.number, item.message);
-        if (stopSending) break;
+        if (!isActive()) break;
 
         if (sent) {
           try {
             setSendStatus('Updating message status...');
             const updateUrl = buildIdUrl(state.updateUrl, item._id);
             await apiRequest('GET', updateUrl);
+            if (!isActive()) break;
             setSendStatus(`Sent & marked: ${item.number}`);
           } catch (err) {
-            setSendStatus(`Sent, but update failed: ${err.message}. Retrying fetch...`);
+            if (!isActive()) break;
+            const msg = err.message || 'Update failed';
+            setSendStatus(`Sent, but mark-sent failed: ${msg}`);
+            clearQueue();
+            setRunning(false);
+            return;
           }
         } else {
           try {
             setSendStatus(`Marking ${item.number} as not available...`);
             const notAvailableUrl = buildIdUrl(state.notAvailableUrl, item._id);
             await apiRequest('GET', notAvailableUrl);
+            if (!isActive()) break;
             setSendStatus(`Marked not available: ${item.number}`);
           } catch (err) {
-            setSendStatus(`Not-available update failed: ${err.message}. Retrying fetch...`);
+            if (!isActive()) break;
+            const msg = err.message || 'Not-available update failed';
+            setSendStatus(msg);
+            clearQueue();
+            setRunning(false);
+            return;
           }
         }
 
@@ -347,7 +420,7 @@
         delete state.currentMessage;
         saveQueue(state);
 
-        if (stopSending) break;
+        if (!isActive()) break;
 
         const readyForNext = await waitBeforeNext(state.minDelay, state.maxDelay);
         if (!readyForNext) break;
@@ -355,9 +428,6 @@
 
       clearQueue();
       setRunning(false);
-      if (stopSending) {
-        setSendStatus('Stopped.');
-      }
     }
 
     async function startManualSending() {
@@ -381,6 +451,7 @@
         .filter((n) => n);
 
       stopSending = false;
+      activeRunId = beginSenderRun();
       setRunning(true);
 
       const state = {
@@ -403,7 +474,11 @@
       const maxDelay = parseInt(document.getElementById('wa-max-delay').value, 10) || 12;
 
       if (!fetchUrl || !updateUrl || !notAvailableUrl) {
-        alert('Please enter Fetch, Update, and Mark Not Available API URLs.');
+        alert('Please enter Fetch, Mark Sent, and Mark Not Available API URLs.');
+        return;
+      }
+      if (!/^https?:\/\//i.test(fetchUrl) || !/^https?:\/\//i.test(updateUrl) || !/^https?:\/\//i.test(notAvailableUrl)) {
+        alert('All API URLs must start with http:// or https://');
         return;
       }
       if (minDelay > maxDelay) {
@@ -413,7 +488,9 @@
 
       saveApiSettings(fetchUrl, updateUrl, notAvailableUrl);
       stopSending = false;
+      activeRunId = beginSenderRun();
       setRunning(true);
+      setSendStatus('Starting...');
 
       const state = {
         mode: 'api',
@@ -424,23 +501,49 @@
         maxDelay
       };
       saveQueue(state);
-      await processApiQueue(state);
+      try {
+        await processApiQueue(state);
+      } catch (err) {
+        clearQueue();
+        setRunning(false);
+        setSendStatus(err.message || 'Something went wrong');
+        alert(`Start failed.\n\n${err.message || 'Unknown error'}`);
+      }
     }
 
     document.getElementById('wa-start-whatsapp-chat').addEventListener('click', () => {
+      const startBtn = document.getElementById('wa-start-whatsapp-chat');
+      if (startBtn.disabled) return;
+
+      const activeBtn = sidebar.querySelector('.wa-tab.active');
+      activeTab = activeBtn?.dataset.tab || activeTab;
+      updateStartButtonLabel();
+
       if (activeTab === 'api') {
-        startApiSending();
+        startApiSending().catch((err) => {
+          clearQueue();
+          setRunning(false);
+          setSendStatus(err.message || 'Start failed');
+          alert(`Start failed.\n\n${err.message || 'Unknown error'}`);
+        });
       } else {
-        startManualSending();
+        startManualSending().catch((err) => {
+          clearQueue();
+          setRunning(false);
+          setSendStatus(err.message || 'Start failed');
+          alert(`Start failed.\n\n${err.message || 'Unknown error'}`);
+        });
       }
     });
 
     document.getElementById('wa-stop-whatsapp-chat').addEventListener('click', () => {
       stopSending = true;
+      cancelAllSenderRuns(); // invalidates every in-flight countdown/loop
       if (activeTimeout) clearTimeout(activeTimeout);
       clearQueue();
       setRunning(false);
-      setSendStatus('Stopped.');
+      const status = document.getElementById('wa-send-status');
+      if (status) status.textContent = 'Stopped.';
     });
 
     document.getElementById('wa-sidebar-close').onclick = () => {
@@ -459,6 +562,7 @@
     const pending = loadQueue();
     if (pending) {
       stopSending = false;
+      activeRunId = beginSenderRun();
       setRunning(true);
       if (pending.mode === 'api') {
         activeTab = 'api';
@@ -466,6 +570,7 @@
         sidebar.querySelectorAll('.wa-tab-panel').forEach((panel) => {
           panel.style.display = panel.dataset.panel === 'api' ? 'block' : 'none';
         });
+        updateStartButtonLabel();
         sleep(2500).then(async () => {
           // Resume mid-send if chat was opened before reload
           if (pending.currentId && pending.currentNumber && pending.currentMessage) {

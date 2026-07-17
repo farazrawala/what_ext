@@ -1,4 +1,10 @@
 const statusEl = document.getElementById('status');
+const versionEl = document.getElementById('ext-version');
+
+try {
+  const version = chrome.runtime.getManifest().version;
+  if (versionEl) versionEl.textContent = `v${version}`;
+} catch (_) {}
 
 function setStatus(text) {
   statusEl.textContent = text || '';

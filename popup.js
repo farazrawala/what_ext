@@ -10,21 +10,17 @@ async function getActiveTab() {
 }
 
 async function injectSidebar(tabId) {
-  try {
-    await chrome.tabs.sendMessage(tabId, { type: 'wa-toggle-sidebar' });
-    return true;
-  } catch {
-    await chrome.scripting.insertCSS({
-      target: { tabId },
-      files: ['sidebar.css']
-    });
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ['content.js']
-    });
-    await chrome.tabs.sendMessage(tabId, { type: 'wa-show-sidebar' });
-    return true;
-  }
+  // Always re-inject so extension reloads pick up the latest UI/code
+  await chrome.scripting.insertCSS({
+    target: { tabId },
+    files: ['sidebar.css']
+  });
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ['content.js']
+  });
+  await chrome.tabs.sendMessage(tabId, { type: 'wa-show-sidebar' });
+  return true;
 }
 
 document.getElementById('openWa').addEventListener('click', async () => {

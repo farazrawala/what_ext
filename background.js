@@ -72,3 +72,53 @@ function scheduleReconnect() {
 
 // Keep click/popup independent from socket connection
 setTimeout(connectWebSocket, 0);
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type !== 'wa-api-request') return false;
+
+  const { method, url, body } = message;
+  if (!url || !method) {
+    sendResponse({ ok: false, error: 'Missing method or URL' });
+    return false;
+  }
+
+  (async () => {
+    try {
+      const options = {
+        method,
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json'
+        }
+      };
+      if (body && method !== 'GET' && method !== 'HEAD') {
+        options.body = JSON.stringify(body);
+      }
+
+      const res = await fetch(url, options);
+      const text = await res.text();
+      let data = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {
+        data = { raw: text };
+      }
+
+      if (!res.ok) {
+        sendResponse({
+          ok: false,
+          status: res.status,
+          error: data?.message || `HTTP ${res.status}`,
+          data
+        });
+        return;
+      }
+
+      sendResponse({ ok: true, status: res.status, data });
+    } catch (err) {
+      sendResponse({ ok: false, error: err.message || 'Network error' });
+    }
+  })();
+
+  return true;
+});

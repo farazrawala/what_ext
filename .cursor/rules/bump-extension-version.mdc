@@ -1,0 +1,12 @@
+---
+description: Bump Chrome extension manifest version on every code change
+alwaysApply: true
+---
+
+# Extension Version Bump
+
+Whenever you change any extension files (`content.js`, `background.js`, `popup.js`, `sidebar.css`, `popup.html`, `manifest.json`, etc.), **always bump `version` in `manifest.json`** in the same change.
+
+- Use semver patch bumps by default (`1.2` → `1.3` → `1.4`)
+- Do this even for small UI/CSS tweaks — it helps Chrome pick up reloads and avoid stale UI
+- Mention the new version briefly when telling the user to reload the extension

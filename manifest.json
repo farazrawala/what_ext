@@ -1,12 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Store Sync WhatsApp Sender",
-  "version": "1.1",
+  "version": "1.9",
   "description": "Change cursor style and start WhatsApp chats from a sidebar.",
   "permissions": ["scripting", "activeTab", "tabs"],
   "host_permissions": [
     "https://web.whatsapp.com/*",
-    "http://localhost:3000/*"
+    "http://localhost:3000/*",
+    "http://*/*",
+    "https://*/*"
   ],
   "background": {
     "service_worker": "background.js"

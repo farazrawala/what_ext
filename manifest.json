@@ -1,15 +1,19 @@
 {
   "manifest_version": 3,
-  "name": "Cursor & WhatsApp Sidebar",
-  "version": "1.0",
+  "name": "Store Sync WhatsApp Sender",
+  "version": "1.1",
   "description": "Change cursor style and start WhatsApp chats from a sidebar.",
-  "permissions": ["scripting", "activeTab"],
-  "host_permissions": ["https://web.whatsapp.com/*"],
+  "permissions": ["scripting", "activeTab", "tabs"],
+  "host_permissions": [
+    "https://web.whatsapp.com/*",
+    "http://localhost:3000/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Open Sidebar"
+    "default_title": "Open WhatsApp Sidebar",
+    "default_popup": "popup.html"
   },
   "content_scripts": [
     {

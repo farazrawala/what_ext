@@ -1,6 +1,7 @@
 #wa-cursor-sidebar {
   position: fixed;
-  top: 0;
+  top: auto;
+  bottom: 0;
   right: 0;
   width: 340px;
   height: 50vh;

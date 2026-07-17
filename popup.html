@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    body {
+      width: 260px;
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #0b141a;
+      color: #e9edef;
+    }
+    .wrap {
+      padding: 14px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    p {
+      margin: 0 0 12px;
+      font-size: 12px;
+      color: #8696a0;
+      line-height: 1.4;
+    }
+    button {
+      width: 100%;
+      border: 0;
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      background: #25d366;
+      color: #fff;
+    }
+    button:hover {
+      background: #1da851;
+    }
+    button.secondary {
+      margin-top: 8px;
+      background: #202c33;
+      color: #e9edef;
+    }
+    button.secondary:hover {
+      background: #2a3942;
+    }
+    #status {
+      margin-top: 10px;
+      font-size: 11px;
+      color: #8696a0;
+      min-height: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Store Sync WhatsApp Sender</h1>
+    <p>Click to open WhatsApp Web with the message sidebar.</p>
+    <button id="openWa">Open WhatsApp Web</button>
+    <div id="status"></div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,5 +1,6 @@
 const statusEl = document.getElementById('status');
 const versionEl = document.getElementById('ext-version');
+const welcomeEl = document.getElementById('welcome');
 
 try {
   const version = chrome.runtime.getManifest().version;
@@ -9,6 +10,19 @@ try {
 function setStatus(text) {
   statusEl.textContent = text || '';
 }
+
+function setWelcome(text) {
+  if (welcomeEl) welcomeEl.textContent = text || '';
+}
+
+chrome.runtime.sendMessage({ type: 'wa-get-pos-auth' }, (response) => {
+  if (chrome.runtime.lastError || !response?.authenticated) {
+    setWelcome('Welcome — log in to AI POS first');
+    return;
+  }
+  const name = String(response.companyName || '').trim();
+  setWelcome(name ? `Welcome ${name}` : 'Welcome');
+});
 
 async function getActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });

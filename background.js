@@ -1,6 +1,17 @@
 let ws = null;
 let reconnectTimer = null;
 
+importScripts('posAuth.js');
+
+async function attachPosAuthHeaders(url, headers) {
+  const auth = await readPosAuth(url);
+  const next = { ...headers };
+  if (auth.token) {
+    next.Authorization = `Bearer ${auth.token}`;
+  }
+  return next;
+}
+
 function connectWebSocket() {
   try {
     if (typeof WebSocket === 'undefined') {
@@ -74,6 +85,21 @@ function scheduleReconnect() {
 setTimeout(connectWebSocket, 0);
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === 'wa-get-pos-auth') {
+    (async () => {
+      const hintUrl = message.apiUrl || message.origin || 'http://localhost:5173/api/';
+      const auth = await readPosAuth(hintUrl);
+      const urls = auth.authenticated
+        ? buildDefaultApiUrls(auth.origin, auth.companyId)
+        : null;
+      sendResponse({
+        ...auth,
+        urls
+      });
+    })();
+    return true;
+  }
+
   if (message?.type !== 'wa-api-request') return false;
 
   const { method, url, body } = message;
@@ -84,13 +110,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   (async () => {
     try {
-      const options = {
-        method,
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/json'
-        }
-      };
+      const headers = await attachPosAuthHeaders(url, {
+        Accept: 'application/json',
+        'Content-Type': 'application/json'
+      });
+      const options = { method, headers };
       if (body && method !== 'GET' && method !== 'HEAD') {
         options.body = JSON.stringify(body);
       }

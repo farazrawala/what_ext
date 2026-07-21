@@ -109,6 +109,32 @@ input::placeholder {
   font-size: 11px;
 }
 
+.wa-pos-auth-status {
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  margin-bottom: 10px;
+  line-height: 1.35;
+}
+
+.wa-pos-auth-status.is-ok {
+  background: rgba(15, 118, 110, 0.12);
+  color: #0f766e;
+  border: 1px solid rgba(15, 118, 110, 0.25);
+}
+
+.wa-pos-auth-status.is-muted {
+  background: rgba(100, 116, 139, 0.1);
+  color: #64748b;
+  border: 1px solid rgba(100, 116, 139, 0.2);
+}
+
+.wa-pos-auth-status.is-error {
+  background: rgba(185, 28, 28, 0.08);
+  color: #b91c1c;
+  border: 1px solid rgba(185, 28, 28, 0.2);
+}
+
 .wa-sidebar-content {
   padding: 16px;
   flex: 1;

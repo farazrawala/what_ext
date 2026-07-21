@@ -112,6 +112,52 @@
     }
   }
 
+  function applyPosAuthToSidebar(sidebar) {
+    const statusEl = sidebar.querySelector('#wa-pos-auth-status');
+    if (!statusEl) return;
+
+    const apiSettings = loadApiSettings();
+    const hintUrl =
+      apiSettings.fetchUrl ||
+      apiSettings.receiveUrl ||
+      'http://localhost:5173/api/whatsapp_message/fetch-random';
+
+    chrome.runtime.sendMessage({ type: 'wa-get-pos-auth', apiUrl: hintUrl }, (response) => {
+      if (chrome.runtime.lastError) {
+        statusEl.textContent = 'POS auth: extension error';
+        statusEl.className = 'wa-pos-auth-status is-error';
+        return;
+      }
+
+      if (!response?.authenticated) {
+        statusEl.textContent = 'POS auth: log in to AI POS in this browser first';
+        statusEl.className = 'wa-pos-auth-status is-muted';
+        return;
+      }
+
+      statusEl.textContent = response.companyName
+        ? `POS connected — Welcome ${response.companyName}`
+        : response.companyId
+          ? `POS connected (company ${response.companyId.slice(0, 8)}…)`
+          : 'POS connected';
+      statusEl.className = 'wa-pos-auth-status is-ok';
+
+      if (!response.urls) return;
+
+      const setIfEmpty = (id, value) => {
+        const el = sidebar.querySelector(`#${id}`);
+        if (!el || el.value.trim()) return;
+        el.value = value;
+      };
+
+      setIfEmpty('wa-fetch-url', response.urls.fetchUrl);
+      setIfEmpty('wa-update-url', response.urls.updateUrl);
+      setIfEmpty('wa-not-available-url', response.urls.notAvailableUrl);
+      setIfEmpty('wa-receive-url', response.urls.receiveUrl);
+      persistApiUrlsFromInputs();
+    });
+  }
+
   function persistApiUrlsFromInputs() {
     const fetchUrl = document.getElementById('wa-fetch-url')?.value.trim() || '';
     const updateUrl = document.getElementById('wa-update-url')?.value.trim() || '';
@@ -639,6 +685,7 @@
           <textarea id="wa-message-input" placeholder="Enter your message"></textarea>
         </div>
         <div class="wa-tab-panel" data-panel="api" style="display:none;">
+          <div id="wa-pos-auth-status" class="wa-pos-auth-status is-muted">Checking POS login…</div>
           <label for="wa-fetch-url">Fetch Message URL (GET):</label>
           <input type="text" id="wa-fetch-url" placeholder="http://localhost:5173/api/whatsapp_message/fetch-random?company_id=..." />
           <label for="wa-update-url">Mark Sent URL (GET):</label>
@@ -686,6 +733,8 @@
       input.addEventListener('change', persistApiUrlsFromInputs);
       input.addEventListener('blur', persistApiUrlsFromInputs);
     });
+
+    applyPosAuthToSidebar(sidebar);
 
     let stopSending = false;
     let stopListening = false;

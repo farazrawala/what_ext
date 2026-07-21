@@ -34,6 +34,15 @@
       color: #8696a0;
       line-height: 1.4;
     }
+    .welcome {
+      color: #e9edef;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    .hint {
+      margin-bottom: 12px;
+    }
     button {
       width: 100%;
       border: 0;
@@ -68,7 +77,8 @@
   <div class="wrap">
     <h1>Store Sync WhatsApp Sender</h1>
     <div class="version" id="ext-version">v…</div>
-    <p>Click to open WhatsApp Web with the message sidebar.</p>
+    <p id="welcome" class="welcome">Checking POS login…</p>
+    <p class="hint">Click to open WhatsApp Web with the message sidebar.</p>
     <button id="openWa">Open WhatsApp Web</button>
     <div id="status"></div>
   </div>

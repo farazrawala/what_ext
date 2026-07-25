@@ -72,17 +72,42 @@ function formatCompanyDisplayName(name) {
     .trim();
 }
 
+function digitsOnly(value) {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function phoneFromChatId(chatId) {
+  const raw = String(chatId || '');
+  const cUs = raw.match(/^(\d+)@c\.us$/i);
+  if (cUs) return cUs[1];
+  // Some builds embed the peer number before @lid / other suffixes
+  const beforeAt = raw.split('@')[0] || '';
+  if (/^\d{8,15}$/.test(beforeAt)) return beforeAt;
+  return '';
+}
+
 function buildChatCreateBody(incoming) {
-  const senderId =
-    incoming.from ||
-    incoming.chatId?.replace(/@.*$/, '') ||
-    incoming.chatName ||
-    'unknown';
+  const from =
+    digitsOnly(incoming.from) ||
+    phoneFromChatId(incoming.chatId) ||
+    digitsOnly(incoming.chatName) ||
+    '';
+  const to =
+    digitsOnly(incoming.to) ||
+    digitsOnly(incoming.myNumber) ||
+    digitsOnly(incoming.to_user_id) ||
+    '';
+
   return {
-    to_user_id: senderId,
-    message: incoming.text,
-    message_id: incoming.messageId,
-    from_user_id: senderId
+    from_user_id: from || 'unknown',
+    to_user_id: to || 'unknown',
+    message: incoming.text || '',
+    message_id: incoming.messageId || '',
+    whatsapp_time:
+      incoming.whatsapp_time ||
+      incoming.receivedAt ||
+      incoming.whatsappTime ||
+      '',
   };
 }
 

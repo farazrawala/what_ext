@@ -89,12 +89,21 @@ Sets status → `not_available`.
 
 ```json
 {
-  "to_user_id": "<sender phone or chat id>",
-  "from_user_id": "<sender phone or chat id>",
-  "message": "<message text>",
-  "message_id": "<whatsapp message id>"
+  "from_user_id": "923001234567",
+  "to_user_id": "923009876543",
+  "message": "Hello, is this available?",
+  "message_id": "wa_msg_abc123",
+  "whatsapp_time": "2026-07-25T02:15:30.000Z"
 }
 ```
+
+| Field | Meaning |
+|---|---|
+| `from_user_id` | Customer WhatsApp number (who sent the message) — digits only |
+| `to_user_id` | Store / logged-in WhatsApp number (who received it) — digits only |
+| `message` | Message text |
+| `message_id` | WhatsApp message id |
+| `whatsapp_time` | WhatsApp message timestamp (ISO string preferred) |
 
 **Headers:**
 

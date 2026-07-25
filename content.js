@@ -304,6 +304,16 @@
   if (typeof window.__waReceiveActiveRun !== "number") {
     window.__waReceiveActiveRun = 0;
   }
+  // Reinjection: drop any prior observer/poll and invalidate the old listen run
+  // so ensureReceiveListening() won't think it's still active with dead hooks.
+  if (
+    window.__waReceiveObserver ||
+    window.__waReceivePollTimer ||
+    window.__waReceiveOnlineHandler ||
+    window.__waReceiveVisibilityHandler
+  ) {
+    window.__waReceiveActiveRun += 1;
+  }
   if (window.__waReceiveObserver) {
     try {
       window.__waReceiveObserver.disconnect();
@@ -382,7 +392,274 @@
   }
 
   function normalizePhone(number) {
-    return String(number).replace(/\D/g, "");
+    return String(number || "").replace(/\D/g, "");
+  }
+
+  /** Logged-in WhatsApp account phone (digits only). */
+  function getMyWhatsAppNumber() {
+    if (window.__waMyNumber) return window.__waMyNumber;
+
+    const tryWid = (raw) => {
+      if (!raw) return "";
+      const cleaned = String(raw).replace(/^"+|"+$/g, "");
+      // "923001234567:emma.t@example.net" or "923001234567@c.us"
+      const before =
+        cleaned.split(":")[0].split("@")[0].replace(/\D/g, "") || "";
+      return before.length >= 8 && before.length <= 15 ? before : "";
+    };
+
+    try {
+      const keys = ["last-wid", "last-wid-md", "PreferredIdentityId"];
+      for (const key of keys) {
+        const n = tryWid(localStorage.getItem(key));
+        if (n) {
+          window.__waMyNumber = n;
+          return n;
+        }
+      }
+    } catch (_) {}
+
+    // Profile drawer / header sometimes exposes the number as title
+    const profileCandidates = [
+      document.querySelector('[data-testid="drawer-left"] span[title]'),
+      document.querySelector('[data-testid="menu-bar-profile"] span[title]'),
+      document.querySelector('header span[title^="+"]'),
+    ];
+    for (const el of profileCandidates) {
+      const n = normalizePhone(el?.getAttribute?.("title") || el?.textContent);
+      if (n.length >= 8 && n.length <= 15) {
+        window.__waMyNumber = n;
+        return n;
+      }
+    }
+
+    // Fallback: any outgoing/incoming legacy data-id won't include "me",
+    // but some profile about lines do.
+    return "";
+  }
+
+  function phoneFromChatId(chatId) {
+    const raw = String(chatId || "");
+    const cUs = raw.match(/^(\d+)@c\.us$/i);
+    if (cUs) return cUs[1];
+    const beforeAt = raw.split("@")[0] || "";
+    if (/^\d{8,15}$/.test(beforeAt)) return beforeAt;
+    return "";
+  }
+
+  function isLikelyPhoneDigits(digits) {
+    const n = String(digits || "");
+    return n.length >= 8 && n.length <= 15;
+  }
+
+  function extractPhoneFromText(text) {
+    const raw = String(text || "").trim();
+    if (!raw) return "";
+    // +92 336 1225588 / (92) 336-1225588
+    const plus = raw.match(/\+\d[\d\s\-().]{6,}\d/);
+    if (plus) {
+      const n = normalizePhone(plus[0]);
+      if (isLikelyPhoneDigits(n)) return n;
+    }
+    // Bare international-ish number as the whole string
+    const bare = normalizePhone(raw);
+    if (isLikelyPhoneDigits(bare) && /^[\d\s+\-().]+$/.test(raw)) return bare;
+    return "";
+  }
+
+  function phoneFromImgSrc(src) {
+    const s = String(src || "");
+    const m =
+      s.match(/[?&]u=(\d{8,15})(?:%40|@)c\.us/i) ||
+      s.match(/\/(\d{8,15})@c\.us/i);
+    return m && isLikelyPhoneDigits(m[1]) ? m[1] : "";
+  }
+
+  function phoneFromPrePlainText(pre) {
+    // "[6:52 AM, 7/25/2026] +92 300 1234567: " or "... Faraz: "
+    const m = String(pre || "").match(/\]\s*(.+?):\s*$/);
+    if (!m) return "";
+    return extractPhoneFromText(m[1]);
+  }
+
+  function getPeerPhoneCache() {
+    if (!window.__waPeerPhoneByChat) {
+      window.__waPeerPhoneByChat = new Map();
+    }
+    return window.__waPeerPhoneByChat;
+  }
+
+  function cachePeerPhone(chatKey, phone) {
+    const n = normalizePhone(phone);
+    if (!chatKey || !isLikelyPhoneDigits(n)) return;
+    getPeerPhoneCache().set(String(chatKey).trim(), n);
+  }
+
+  function getCachedPeerPhone(chatKey) {
+    if (!chatKey) return "";
+    return getPeerPhoneCache().get(String(chatKey).trim()) || "";
+  }
+
+  /** Best-effort peer (customer) phone for the open 1:1 chat. */
+  function getPeerPhoneFromOpenChatDom(prePlainText) {
+    const chatName = getOpenChatName();
+    const cached = getCachedPeerPhone(chatName);
+    if (cached) return cached;
+
+    // 1) Title itself is a number (unsaved contact)
+    let phone = extractPhoneFromText(chatName);
+    if (phone) {
+      cachePeerPhone(chatName, phone);
+      return phone;
+    }
+
+    // 2) Header subtitle / business line often shows +92…
+    const header =
+      document.querySelector("#main header") ||
+      document.querySelector('[data-testid="conversation-header"]') ||
+      document.querySelector('#main [data-testid="conversation-info-header"]');
+    if (header) {
+      const bits = header.querySelectorAll("[title], span, div");
+      for (const el of bits) {
+        phone =
+          extractPhoneFromText(el.getAttribute?.("title") || "") ||
+          extractPhoneFromText((el.textContent || "").trim());
+        if (phone && phone !== getMyWhatsAppNumber()) {
+          cachePeerPhone(chatName, phone);
+          return phone;
+        }
+      }
+      // 3) Avatar URL sometimes embeds u=PHONE%40c.us
+      header.querySelectorAll("img[src]").forEach((img) => {
+        if (phone) return;
+        phone = phoneFromImgSrc(img.getAttribute("src"));
+      });
+      if (phone) {
+        cachePeerPhone(chatName, phone);
+        return phone;
+      }
+    }
+
+    // 4) Message pre-plain-text sender
+    phone = phoneFromPrePlainText(prePlainText);
+    if (phone) {
+      cachePeerPhone(chatName, phone);
+      return phone;
+    }
+
+    // 5) Any visible avatar in the open conversation
+    document.querySelectorAll("#main img[src]").forEach((img) => {
+      if (phone) return;
+      phone = phoneFromImgSrc(img.getAttribute("src"));
+    });
+    if (phone) {
+      cachePeerPhone(chatName, phone);
+      return phone;
+    }
+
+    // 6) Matching chat-list row title/subtitle
+    const pane = findChatListPane();
+    if (pane && chatName) {
+      queryChatListCells(pane).forEach((cell) => {
+        if (phone) return;
+        if (getChatTitleFromRow(cell) !== chatName) return;
+        phone =
+          extractPhoneFromText(getChatTitleFromRow(cell)) ||
+          extractPhoneFromText(getPreviewFromRow(cell));
+        cell.querySelectorAll("img[src]").forEach((img) => {
+          if (phone) return;
+          phone = phoneFromImgSrc(img.getAttribute("src"));
+        });
+      });
+      if (phone) {
+        cachePeerPhone(chatName, phone);
+        return phone;
+      }
+    }
+
+    return "";
+  }
+
+  async function scrapePeerPhoneFromContactInfo() {
+    const header =
+      document.querySelector("#main header") ||
+      document.querySelector('[data-testid="conversation-header"]');
+    if (!header) return "";
+
+    const alreadyOpen =
+      document.querySelector('[data-testid="contact-info-drawer"]') ||
+      document.querySelector('[data-testid="drawer-right"]') ||
+      Array.from(document.querySelectorAll("header, div")).find((el) =>
+        /^(contact info|group info)$/i.test(
+          (el.textContent || "").replace(/\s+/g, " ").trim(),
+        ),
+      );
+
+    if (!alreadyOpen) {
+      const clickTarget =
+        header.querySelector(
+          '[data-testid="conversation-info-header"], [data-testid="conversation-info-header-chat-title"]',
+        ) || header;
+      simulateUserClick(clickTarget);
+      await sleep(700);
+    }
+
+    const roots = [
+      document.querySelector('[data-testid="contact-info-drawer"]'),
+      document.querySelector('[data-testid="drawer-right"]'),
+      document.querySelector('#app div[data-animate-drawer-inner="true"]'),
+      document.body,
+    ].filter(Boolean);
+
+    let phone = "";
+    for (const root of roots) {
+      if (phone) break;
+      root.querySelectorAll("span, div, [title]").forEach((el) => {
+        if (phone) return;
+        const t =
+          el.getAttribute?.("title") || (el.textContent || "").trim();
+        if (!t || t.length > 32) return;
+        const n = extractPhoneFromText(t);
+        if (n && n !== getMyWhatsAppNumber()) phone = n;
+      });
+      if (phone) break;
+      root.querySelectorAll("img[src]").forEach((img) => {
+        if (phone) return;
+        phone = phoneFromImgSrc(img.getAttribute("src"));
+      });
+    }
+
+    // Close drawer so we don't leave contact info open
+    try {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          code: "Escape",
+          keyCode: 27,
+          which: 27,
+          bubbles: true,
+        }),
+      );
+    } catch (_) {}
+
+    return phone;
+  }
+
+  async function ensurePeerPhone(chatName, prePlainText) {
+    let phone =
+      getPeerPhoneFromOpenChatDom(prePlainText) ||
+      getCachedPeerPhone(chatName);
+    if (phone) return phone;
+
+    // One contact-info scrape per chat name per session
+    const tried = (window.__waPeerPhoneTried = window.__waPeerPhoneTried || new Set());
+    const key = String(chatName || "").trim() || "__open__";
+    if (!tried.has(key)) {
+      tried.add(key);
+      phone = await scrapePeerPhoneFromContactInfo();
+      if (phone) cachePeerPhone(chatName || key, phone);
+    }
+    return phone || "";
   }
 
   function sleep(ms) {
@@ -658,7 +935,9 @@
     }
     const isGroup = chatId.includes("@g.us");
     const phone =
-      chatId.includes("@c.us") ? normalizePhone(chatId.split("@")[0]) : "";
+      chatId.includes("@c.us") ?
+        normalizePhone(chatId.split("@")[0])
+      : phoneFromChatId(chatId);
     return { fromMe, chatId, phone, isGroup };
   }
 
@@ -789,9 +1068,72 @@
   function seedVisibleConversationBaseline(baselineIds) {
     const main = document.querySelector("#main");
     if (!main) return;
+    // Only baseline messages outside the read window — keep today's/synced
+    // messages eligible for capture (including ones already read on phone).
     findIncomingMessageRoots(main).forEach((node) => {
       const id = getMessageIdFromNode(node);
-      if (id) baselineIds.add(id);
+      if (!id) return;
+      const ts = getMessageTimestamp(node);
+      if (ts && !isWithinReadWindow(ts)) {
+        baselineIds.add(id);
+      }
+    });
+  }
+
+  /** WhatsApp shows e.g. "3 unread messages" above the unread block. */
+  function getUnreadDividerCount(root) {
+    const scope =
+      root && root.nodeType === 1 ?
+        root
+      : document.querySelector("#main") || document;
+    let found = 0;
+    scope
+      .querySelectorAll?.(
+        '[role="row"], [data-testid="msg-system"], div, span',
+      )
+      ?.forEach((el) => {
+        if (found) return;
+        const text = (el.textContent || "").replace(/\s+/g, " ").trim();
+        if (text.length > 40) return;
+        const m = text.match(/^(\d+)\s+unread\s+messages?$/i);
+        if (m) found = parseInt(m[1], 10) || 0;
+      });
+    return found > 0 ? Math.min(found, 99) : 0;
+  }
+
+  function findUnreadDividerElement(root) {
+    const scope =
+      root && root.nodeType === 1 ?
+        root
+      : document.querySelector("#main") || document;
+    let match = null;
+    scope
+      .querySelectorAll?.(
+        '[role="row"], [data-testid="msg-system"], div, span',
+      )
+      ?.forEach((el) => {
+        if (match) return;
+        const text = (el.textContent || "").replace(/\s+/g, " ").trim();
+        if (text.length > 40) return;
+        if (/^\d+\s+unread\s+messages?$/i.test(text)) match = el;
+      });
+    return match;
+  }
+
+  /** Incoming message nodes that appear after the "N unread messages" divider. */
+  function getIncomingNodesAfterUnreadDivider(root) {
+    const main =
+      (root && root.nodeType === 1 ? root : null) ||
+      document.querySelector("#main");
+    if (!main) return [];
+    const divider = findUnreadDividerElement(main);
+    const all = findIncomingMessageRoots(main);
+    if (!divider) return [];
+
+    // Keep nodes that are visually/document-order after the divider
+    return all.filter((node) => {
+      const pos = divider.compareDocumentPosition(node);
+      return !!(pos & Node.DOCUMENT_POSITION_FOLLOWING);
     });
   }
 
@@ -822,10 +1164,12 @@
 
     if (options.baselineIds?.has(messageId)) return null;
 
-    if (!messageDate && options.isRuntime) {
+    if (!messageDate && (options.isRuntime || options.unreadCatchup)) {
       const timeOnly = parseMessageTimestamp(pre, { allowTimeOnly: true });
       if (timeOnly) messageDate = timeOnly;
-      else if (options.allowUndatedRuntime) messageDate = new Date();
+      else if (options.allowUndatedRuntime || options.unreadCatchup) {
+        messageDate = new Date();
+      }
     }
 
     if (!messageDate) return null;
@@ -833,16 +1177,24 @@
     if (!options.unreadCatchup && !options.isRuntime && !isWithinReadWindow(messageDate)) return null;
 
     const chatName = getOpenChatName();
+    const customerPhone =
+      parsed.phone ||
+      phoneFromChatId(parsed.chatId) ||
+      getPeerPhoneFromOpenChatDom(pre) ||
+      (/^\+?\d[\d\s\-()]{7,}$/.test(chatName) ? normalizePhone(chatName) : "");
+    const myPhone = getMyWhatsAppNumber();
 
     return {
       messageId,
-      from: parsed.phone || "",
+      from: customerPhone,
+      to: myPhone,
       chatId: parsed.chatId || "",
-      chatName: chatName || parsed.phone || parsed.chatId || "Unknown",
+      chatName: chatName || customerPhone || parsed.chatId || "Unknown",
       text,
       isGroup: parsed.isGroup,
       receivedAt: messageDate.toISOString(),
       source: options.isRuntime ? "runtime" : "conversation",
+      prePlainText: pre,
     };
   }
 
@@ -1371,7 +1723,7 @@
             <label for="wa-receive-days">Read messages from last (days):</label>
             <input type="number" id="wa-receive-days" value="1" min="1" max="1" readonly />
           </div>
-          <p class="wa-hint">Only <strong>new</strong> messages are captured — live incoming or unread on web (e.g. read on phone). Older visible history is ignored. Chats open only when new sidebar activity appears.</p>
+          <p class="wa-hint">Captures messages that sync to WhatsApp Web — including ones already read on your phone. Only older history outside the read window is ignored.</p>
           <div id="wa-receive-status" class="wa-send-status"></div>
           <div class="wa-receive-controls" style="display:flex; gap:10px; margin-bottom:10px;">
             <button id="wa-start-listening" type="button" style="display:none;">Start Listening</button>
@@ -1572,12 +1924,13 @@
     }
 
     function setReceiveStatus(text) {
-      if (
-        !isListening() &&
-        text !== "Stopped listening." &&
-        text !== "Listening stopped."
-      )
-        return;
+      const allowedWhileStopped =
+        text === "Stopped listening." ||
+        text === "Listening stopped." ||
+        text === "Starting listener…" ||
+        text.startsWith("Waiting for WhatsApp") ||
+        text.startsWith("Listen failed:");
+      if (!isListening() && !allowedWhileStopped) return;
       const status = document.getElementById("wa-receive-status");
       if (status) {
         status.textContent = text;
@@ -1669,6 +2022,22 @@
         const receiveTemplate =
           document.getElementById("wa-receive-url")?.value.trim() || "";
         const apiSettings = loadApiSettings();
+        const apiBody = {
+          from_user_id:
+            normalizePhone(payload.from) ||
+            phoneFromChatId(payload.chatId) ||
+            normalizePhone(payload.chatName) ||
+            "unknown",
+          to_user_id:
+            normalizePhone(payload.to) ||
+            getMyWhatsAppNumber() ||
+            "unknown",
+          message: payload.text || "",
+          message_id: payload.messageId || "",
+          whatsapp_time: payload.receivedAt || payload.whatsapp_time || "",
+        };
+        console.log("[WA] POST /api/chat/create payload →", apiBody);
+
         chrome.runtime.sendMessage(
           {
             type: "wa-post-incoming-chat",
@@ -1679,10 +2048,20 @@
           },
           (response) => {
             if (chrome.runtime.lastError) {
+              console.warn(
+                "[WA] POST /api/chat/create failed:",
+                chrome.runtime.lastError.message,
+              );
               reject(new Error(chrome.runtime.lastError.message));
               return;
             }
             if (!response?.ok) {
+              console.warn("[WA] POST /api/chat/create error →", {
+                url: response?.url,
+                payload: response?.body || apiBody,
+                error: response?.error,
+                data: response?.data,
+              });
               const err = new Error(
                 response?.errorInfo?.summary ||
                   response?.error ||
@@ -1703,6 +2082,11 @@
               reject(err);
               return;
             }
+            console.log("[WA] POST /api/chat/create ok →", {
+              url: response.url,
+              payload: response.body || apiBody,
+              data: response.data,
+            });
             resolve(response);
           },
         );
@@ -1752,6 +2136,14 @@
       postQueue = postQueue.then(async () => {
         if (!isListening()) return;
         try {
+          // Resolve sender phone (newer WA data-ids no longer include it)
+          if (!normalizePhone(payload.from)) {
+            const resolved = await ensurePeerPhone(
+              payload.chatName,
+              payload.prePlainText,
+            );
+            if (resolved) payload.from = resolved;
+          }
           await postIncomingToChatApi(payload);
           updateReceivedItemStatus(payload.messageId, "ok");
         } catch (err) {
@@ -1772,28 +2164,119 @@
     }
 
     function processUnreadCatchup(unreadCount) {
-      if (!isListening() || !unreadCount) return;
+      // Capture ALL synced messages in the open chat (read on phone + unread),
+      // not only the "N unread messages" block.
+      return processConversationCatchup({ unreadHint: unreadCount });
+    }
+
+    function processConversationCatchup(options = {}) {
+      if (!isListening()) return 0;
+      const main = document.querySelector("#main");
+      if (!main) return 0;
+
+      const nodes = findIncomingMessageRoots(main);
+      if (!nodes.length) return 0;
+
+      const dividerCount = getUnreadDividerCount(main);
+      const unreadHint = Math.max(
+        Number(options.unreadHint) || 0,
+        dividerCount || 0,
+      );
+      const MAX_CATCHUP = 50;
+
+      const eligible = [];
+      nodes.forEach((node) => {
+        const id = getMessageIdFromNode(node);
+        if (!id || seenIds.has(id) || baselineMessageIds.has(id)) return;
+
+        const ts = getMessageTimestamp(node);
+        // Keep undated + in-window messages; drop clearly old history
+        if (ts && !isWithinReadWindow(ts)) {
+          baselineMessageIds.add(id);
+          return;
+        }
+        eligible.push(node);
+      });
+
+      // Always include the last N (unread hint / divider) even if dated oddly
+      if (unreadHint > 0) {
+        const tail = nodes.slice(-unreadHint);
+        const have = new Set(eligible);
+        tail.forEach((node) => {
+          const id = getMessageIdFromNode(node);
+          if (!id || seenIds.has(id)) return;
+          if (!have.has(node)) eligible.push(node);
+          baselineMessageIds.delete(id);
+        });
+      }
+
+      const toCapture =
+        eligible.length > MAX_CATCHUP ?
+          eligible.slice(-MAX_CATCHUP)
+        : eligible;
+      if (!toCapture.length) return 0;
+
+      const captureIds = new Set(
+        toCapture.map((n) => getMessageIdFromNode(n)).filter(Boolean),
+      );
+
+      // Baseline anything we're intentionally not capturing this pass
+      nodes.forEach((node) => {
+        const id = getMessageIdFromNode(node);
+        if (!id || captureIds.has(id) || seenIds.has(id)) return;
+        const ts = getMessageTimestamp(node);
+        if (ts && !isWithinReadWindow(ts)) baselineMessageIds.add(id);
+      });
+
+      let captured = 0;
+      toCapture.forEach((node) => {
+        const payload = extractIncomingPayload(
+          node,
+          getScanOptions({
+            unreadCatchup: true,
+            allowUndatedRuntime: true,
+            conversationCatchup: true,
+          }),
+        );
+        if (payload) {
+          handleIncomingPayload(payload);
+          captured += 1;
+        }
+      });
+
+      if (captured > 0) {
+        setReceiveStatus(
+          `Captured ${captured} synced message${captured === 1 ? "" : "s"}`,
+        );
+      }
+      return captured;
+    }
+
+    function catchupOpenConversationUnread() {
+      if (!isListening() || !isConversationOpen()) return;
       const main = document.querySelector("#main");
       if (!main) return;
 
-      const nodes = findIncomingMessageRoots(main);
-      const unreadNodes = nodes.slice(-unreadCount);
-      const unreadIds = new Set(
-        unreadNodes.map((node) => getMessageIdFromNode(node)).filter(Boolean),
-      );
+      const openTitle = getOpenChatName();
+      const dividerCount = getUnreadDividerCount(main);
+      const sidebarUnread = openTitle ? getSidebarUnreadForTitle(openTitle) : 0;
+      const nodeCount = findIncomingMessageRoots(main).length;
+      const key = `${openTitle || "chat"}|${nodeCount}|${dividerCount}|${sidebarUnread}`;
+      if (window.__waLastUnreadCatchupKey === key) return;
 
-      nodes.forEach((node) => {
-        const id = getMessageIdFromNode(node);
-        if (id && !unreadIds.has(id)) baselineMessageIds.add(id);
+      const captured = processConversationCatchup({
+        unreadHint: Math.max(dividerCount, sidebarUnread),
       });
-
-      unreadNodes.forEach((node) => {
-        const payload = extractIncomingPayload(
-          node,
-          getScanOptions({ unreadCatchup: true }),
-        );
-        if (payload) handleIncomingPayload(payload);
-      });
+      // Lock this snapshot only after a successful pass (or nothing left to grab)
+      if (captured > 0 || (!dividerCount && !sidebarUnread && nodeCount > 0)) {
+        const stillPending = findIncomingMessageRoots(main).some((node) => {
+          const id = getMessageIdFromNode(node);
+          if (!id || seenIds.has(id) || baselineMessageIds.has(id)) return false;
+          const ts = getMessageTimestamp(node);
+          return !ts || isWithinReadWindow(ts);
+        });
+        if (!stillPending) window.__waLastUnreadCatchupKey = key;
+      }
     }
 
     function getSidebarUnreadForTitle(title) {
@@ -1810,17 +2293,18 @@
 
     function seedListeningBaseline() {
       baselineMessageIds.clear();
+      window.__waLastUnreadCatchupKey = "";
+      if (!isConversationOpen()) return;
+
+      // Capture every in-window synced message in the open chat (read + unread)
       const openTitle = getOpenChatName();
       const openUnread = openTitle ? getSidebarUnreadForTitle(openTitle) : 0;
-
-      if (isConversationOpen() && openUnread > 0) {
-        processUnreadCatchup(openUnread);
-        return;
-      }
-
-      if (isConversationOpen()) {
-        seedVisibleConversationBaseline(baselineMessageIds);
-      }
+      const dividerUnread = getUnreadDividerCount();
+      processConversationCatchup({
+        unreadHint: Math.max(openUnread, dividerUnread),
+      });
+      // Baseline only older-than-window leftovers
+      seedVisibleConversationBaseline(baselineMessageIds);
     }
 
     function queueUnreadChatsOnStart() {
@@ -1911,6 +2395,7 @@
         scanDebounceTimer = null;
         if (!isListening()) return;
         if (isConversationOpen()) {
+          catchupOpenConversationUnread();
           scanForIncomingMessages(document.querySelector("#main") || document, {
             isRuntime: true,
           });
@@ -1920,8 +2405,10 @@
 
     function seedChatListState() {
       const pane = findChatListPane();
-      if (!pane) return;
-      queryChatListCells(pane).forEach((cell) => {
+      if (!pane) return false;
+      const cells = queryChatListCells(pane);
+      if (!cells.length) return false;
+      cells.forEach((cell) => {
         const title = getChatTitleFromRow(cell);
         if (!title) return;
         chatListState.set(title, {
@@ -1930,6 +2417,7 @@
         });
       });
       chatListSeeded = true;
+      return true;
     }
 
     function scanChatListForRuntimeIncoming() {
@@ -1959,6 +2447,16 @@
           unreadIncreased || (unread > 0 && previewChanged);
 
         chatListState.set(title, { preview, unread });
+
+        // User (or WA) opened a chat that had unread — badge cleared but messages still there
+        if (
+          prev.unread > 0 &&
+          unread < prev.unread &&
+          isChatCurrentlyOpen(title)
+        ) {
+          processUnreadCatchup(prev.unread);
+          return;
+        }
 
         if (!hasNewActivity || !isChatRowWithinReadWindow(cell, unread)) return;
 
@@ -2021,6 +2519,13 @@
       openingChat = true;
       openingChatTitle = title || "chat";
       const unreadCount = options.unreadCount || 0;
+      // Cache peer number when the chat title/list row exposes it
+      const titlePhone = extractPhoneFromText(title);
+      if (titlePhone) cachePeerPhone(title, titlePhone);
+      row?.querySelectorAll?.("img[src]").forEach((img) => {
+        const p = phoneFromImgSrc(img.getAttribute("src"));
+        if (p) cachePeerPhone(title, p);
+      });
       try {
         setReceiveStatus(`New message in: ${openingChatTitle}...`);
         const clicked = simulateUserClick(row);
@@ -2057,13 +2562,13 @@
         }
 
         openFailCounts.delete(openingChatTitle);
-        await sleep(400);
-        if (unreadCount > 0) {
-          processUnreadCatchup(unreadCount);
-        } else {
-          seedVisibleConversationBaseline(baselineMessageIds);
-          scanForIncomingMessages(document.querySelector("#main") || document);
-        }
+        await sleep(600);
+        const dividerCount = getUnreadDividerCount();
+        const catchCount = Math.max(unreadCount || 0, dividerCount || 0);
+        processConversationCatchup({ unreadHint: catchCount });
+        await sleep(500);
+        processConversationCatchup({ unreadHint: catchCount });
+        seedVisibleConversationBaseline(baselineMessageIds);
         if (isListening()) {
           setReceiveStatus("Listening for new messages...");
           await sleep(getChatSwitchGapMs());
@@ -2164,8 +2669,9 @@
       window.__waReceivePollTimer = setInterval(() => {
         if (!isListening()) return;
 
-        // Re-scan open conversation for any new messages missed by observer
+        // Re-scan open conversation for unread divider + new messages
         if (isConversationOpen()) {
+          catchupOpenConversationUnread();
           scanForIncomingMessages(document.querySelector("#main") || document);
         }
 
@@ -2197,6 +2703,9 @@
       setListeningUi(true);
       setReceiveStatus("Listening for new messages...");
 
+      // Cache own WhatsApp number for inbound create payload (to_user_id)
+      getMyWhatsAppNumber();
+
       startReceiveObservers();
       seedChatListState();
       seedListeningBaseline();
@@ -2204,18 +2713,63 @@
       scheduleUnreadStartupPasses();
     }
 
-    function ensureReceiveListening() {
-      if (listeningManuallyStopped) {
+    function receiveInfrastructureAlive() {
+      return !!(window.__waReceivePollTimer && window.__waReceiveObserver);
+    }
+
+    async function waitForChatList(timeoutMs = 30000) {
+      const started = Date.now();
+      while (Date.now() - started < timeoutMs) {
+        if (listeningManuallyStopped || stopListening) return false;
+        const pane = findChatListPane();
+        if (pane && queryChatListCells(pane).length > 0) return true;
+        // Pane exists but still loading chats — keep waiting a bit
+        if (pane) {
+          setReceiveStatus("Waiting for WhatsApp chats to load…");
+        } else {
+          setReceiveStatus("Waiting for WhatsApp…");
+        }
+        await sleep(500);
+      }
+      return !!findChatListPane();
+    }
+
+    let listenStartPromise = null;
+
+    async function startListeningWhenReady() {
+      if (listenStartPromise) return listenStartPromise;
+      listenStartPromise = (async () => {
+        try {
+          setListeningUi(true);
+          setReceiveStatus("Starting listener…");
+          await waitForChatList(30000);
+          if (listeningManuallyStopped || stopListening) return;
+          await startListening();
+        } finally {
+          listenStartPromise = null;
+        }
+      })();
+      return listenStartPromise;
+    }
+
+    function ensureReceiveListening(options = {}) {
+      const forceRestart = !!options.forceRestart;
+      if (listeningManuallyStopped && !forceRestart) {
         setListeningUi(false);
         setReceiveStatus("Stopped listening.");
         return;
       }
-      if (isListening()) {
+      if (
+        !forceRestart &&
+        isListening() &&
+        receiveInfrastructureAlive()
+      ) {
         setListeningUi(true);
         setReceiveStatus("Listening for new messages...");
         return;
       }
-      startListening().catch((err) => {
+      // Stale "listening" (run id ok but observer/poll torn down) or first launch
+      startListeningWhenReady().catch((err) => {
         setListeningUi(false);
         setReceiveStatus(`Listen failed: ${err.message || "unknown error"}`);
       });
@@ -2232,9 +2786,7 @@
         listeningManuallyStopped = false;
         stopListening = false;
         sessionStorage.removeItem(LISTENING_STOPPED_KEY);
-        startListening().catch((err) => {
-          setReceiveStatus(`Listen failed: ${err.message || "unknown error"}`);
-        });
+        ensureReceiveListening({ forceRestart: true });
       });
 
     async function countdownSeconds(seconds, getText) {
@@ -2680,12 +3232,21 @@
 
     rehydrateReceivedList();
 
-    if (listeningManuallyStopped) {
-      setListeningUi(false);
-      setReceiveStatus("Stopped listening.");
-    } else {
-      ensureReceiveListening();
+    // Always auto-start listening on sidebar launch (ignore prior Stop in this tab)
+    sessionStorage.removeItem(LISTENING_STOPPED_KEY);
+    listeningManuallyStopped = false;
+    stopListening = false;
+    ensureReceiveListening({ forceRestart: true });
+
+    // If hooks die after launch (reinjection / WA remount), restart automatically
+    if (window.__waListenWatchdog) {
+      clearInterval(window.__waListenWatchdog);
     }
+    window.__waListenWatchdog = setInterval(() => {
+      if (listeningManuallyStopped || stopListening) return;
+      if (isListening() && receiveInfrastructureAlive()) return;
+      ensureReceiveListening({ forceRestart: true });
+    }, 8000);
 
     return sidebar;
   }

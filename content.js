@@ -449,30 +449,44 @@
 
   function isLikelyPhoneDigits(digits) {
     const n = String(digits || "");
-    return n.length >= 8 && n.length <= 15;
+    // Real mobile/E.164-ish lengths; reject odd 13+ blobs we were picking up
+    return n.length >= 10 && n.length <= 15;
+  }
+
+  function scorePhoneCandidate(displayText, digits) {
+    const n = normalizePhone(digits);
+    if (!isLikelyPhoneDigits(n)) return 0;
+    if (n === getMyWhatsAppNumber()) return 0;
+    let score = 1;
+    const t = String(displayText || "").trim();
+    // Strong signal: WhatsApp Contact info style "+92 313 2178663"
+    if (/^\+\d{1,3}[\s\-]?\d/.test(t)) score += 20;
+    if (t.includes("+")) score += 5;
+    // Common PK mobile: 92 + 10 digits
+    if (/^92\d{10}$/.test(n)) score += 5;
+    // Penalize unusual lengths we saw from bad scrapes
+    if (n.length === 13) score -= 8;
+    if (n.length > 13) score -= 10;
+    return score;
   }
 
   function extractPhoneFromText(text) {
     const raw = String(text || "").trim();
-    if (!raw) return "";
-    // +92 336 1225588 / (92) 336-1225588
-    const plus = raw.match(/\+\d[\d\s\-().]{6,}\d/);
+    if (!raw || raw.length > 40) return "";
+
+    // Prefer explicit international formatting
+    const plus = raw.match(/\+\d{1,3}[\s\-]?\d[\d\s\-().]{6,}\d/);
     if (plus) {
       const n = normalizePhone(plus[0]);
-      if (isLikelyPhoneDigits(n)) return n;
+      if (scorePhoneCandidate(plus[0], n) > 0) return n;
     }
-    // Bare international-ish number as the whole string
-    const bare = normalizePhone(raw);
-    if (isLikelyPhoneDigits(bare) && /^[\d\s+\-().]+$/.test(raw)) return bare;
-    return "";
-  }
 
-  function phoneFromImgSrc(src) {
-    const s = String(src || "");
-    const m =
-      s.match(/[?&]u=(\d{8,15})(?:%40|@)c\.us/i) ||
-      s.match(/\/(\d{8,15})@c\.us/i);
-    return m && isLikelyPhoneDigits(m[1]) ? m[1] : "";
+    // Whole string is only a number (unsaved contact title)
+    if (/^[\d\s+\-().]+$/.test(raw)) {
+      const bare = normalizePhone(raw);
+      if (scorePhoneCandidate(raw, bare) > 0) return bare;
+    }
+    return "";
   }
 
   function phoneFromPrePlainText(pre) {
@@ -489,95 +503,148 @@
     return window.__waPeerPhoneByChat;
   }
 
-  function cachePeerPhone(chatKey, phone) {
+  function cachePeerPhone(chatKey, phone, meta = {}) {
     const n = normalizePhone(phone);
     if (!chatKey || !isLikelyPhoneDigits(n)) return;
-    getPeerPhoneCache().set(String(chatKey).trim(), n);
+    const key = String(chatKey).trim();
+    const prev = getPeerPhoneCache().get(key);
+    const prevScore = prev?.score || 0;
+    const nextScore = meta.score ?? scorePhoneCandidate(meta.display || n, n);
+    if (prev && prevScore > nextScore) return;
+    getPeerPhoneCache().set(key, {
+      phone: n,
+      score: nextScore,
+      source: meta.source || "dom",
+    });
   }
 
   function getCachedPeerPhone(chatKey) {
     if (!chatKey) return "";
-    return getPeerPhoneCache().get(String(chatKey).trim()) || "";
+    const entry = getPeerPhoneCache().get(String(chatKey).trim());
+    if (!entry) return "";
+    // Legacy string cache
+    if (typeof entry === "string") return entry;
+    return entry.phone || "";
   }
 
-  /** Best-effort peer (customer) phone for the open 1:1 chat. */
+  function getCachedPeerPhoneScore(chatKey) {
+    if (!chatKey) return 0;
+    const entry = getPeerPhoneCache().get(String(chatKey).trim());
+    if (!entry) return 0;
+    if (typeof entry === "string") return 1;
+    return entry.score || 0;
+  }
+
+  /** Best-effort peer phone from visible chat chrome (no contact-info open). */
   function getPeerPhoneFromOpenChatDom(prePlainText) {
     const chatName = getOpenChatName();
-    const cached = getCachedPeerPhone(chatName);
-    if (cached) return cached;
+    let best = { phone: "", score: 0, display: "" };
+
+    const consider = (display, source) => {
+      const n = extractPhoneFromText(display);
+      if (!n) return;
+      const score = scorePhoneCandidate(display, n);
+      if (score > best.score) best = { phone: n, score, display, source };
+    };
 
     // 1) Title itself is a number (unsaved contact)
-    let phone = extractPhoneFromText(chatName);
-    if (phone) {
-      cachePeerPhone(chatName, phone);
-      return phone;
-    }
+    consider(chatName, "title");
 
-    // 2) Header subtitle / business line often shows +92…
+    // 2) Header subtitle lines (often "+92 …" under the name)
     const header =
       document.querySelector("#main header") ||
       document.querySelector('[data-testid="conversation-header"]') ||
       document.querySelector('#main [data-testid="conversation-info-header"]');
     if (header) {
-      const bits = header.querySelectorAll("[title], span, div");
-      for (const el of bits) {
-        phone =
-          extractPhoneFromText(el.getAttribute?.("title") || "") ||
-          extractPhoneFromText((el.textContent || "").trim());
-        if (phone && phone !== getMyWhatsAppNumber()) {
-          cachePeerPhone(chatName, phone);
-          return phone;
+      header.querySelectorAll("[title], span").forEach((el) => {
+        const title = el.getAttribute?.("title") || "";
+        const text = (el.textContent || "").trim();
+        if (title) consider(title, "header-title");
+        // Only short leaf texts — avoid concatenating whole header
+        if (text && text.length <= 24 && el.children.length === 0) {
+          consider(text, "header-text");
         }
-      }
-      // 3) Avatar URL sometimes embeds u=PHONE%40c.us
-      header.querySelectorAll("img[src]").forEach((img) => {
-        if (phone) return;
-        phone = phoneFromImgSrc(img.getAttribute("src"));
       });
-      if (phone) {
-        cachePeerPhone(chatName, phone);
-        return phone;
+    }
+
+    // 3) Message pre-plain-text sender (only if phone-formatted)
+    const preSender = (String(prePlainText || "").match(/\]\s*(.+?):\s*$/) ||
+      [])[1];
+    if (preSender) consider(preSender, "pre");
+
+    // Do NOT use avatar img ?u=… — often wrong / stale vs Contact info
+
+    if (best.phone) {
+      cachePeerPhone(chatName, best.phone, {
+        score: best.score,
+        display: best.display,
+        source: best.source,
+      });
+      return best.phone;
+    }
+
+    const cached = getCachedPeerPhone(chatName);
+    return cached || "";
+  }
+
+  function findContactInfoDrawer() {
+    const drawers = [
+      document.querySelector('[data-testid="contact-info-drawer"]'),
+      document.querySelector('[data-testid="drawer-right"]'),
+      document.querySelector('#app div[data-animate-drawer-inner="true"]'),
+    ].filter(Boolean);
+
+    for (const d of drawers) {
+      const label = (d.textContent || "").slice(0, 200);
+      if (/contact info|group info/i.test(label)) return d;
+    }
+
+    // Fallback: section that contains both "Contact info" and a +phone
+    const headers = Array.from(document.querySelectorAll("header, div")).filter(
+      (el) =>
+        /^(contact info|group info)$/i.test(
+          (el.textContent || "").replace(/\s+/g, " ").trim(),
+        ),
+    );
+    for (const h of headers) {
+      const root =
+        h.closest('[data-testid="drawer-right"]') ||
+        h.closest('[role="dialog"]') ||
+        h.parentElement?.parentElement;
+      if (root) return root;
+    }
+    return null;
+  }
+
+  function extractPhoneFromContactInfoRoot(root) {
+    if (!root) return "";
+    let best = { phone: "", score: 0, display: "" };
+
+    const consider = (display) => {
+      const n = extractPhoneFromText(display);
+      if (!n) return;
+      const score = scorePhoneCandidate(display, n) + 15; // contact-info bonus
+      if (score > best.score) best = { phone: n, score, display };
+    };
+
+    // Prefer copyable / titled phone rows in the drawer only
+    root.querySelectorAll("[title], span, a").forEach((el) => {
+      const title = el.getAttribute?.("title") || "";
+      const text = (el.textContent || "").trim();
+      if (title && title.length <= 24) consider(title);
+      if (
+        text &&
+        text.length <= 24 &&
+        el.children.length === 0 &&
+        /\+?\d/.test(text)
+      ) {
+        consider(text);
       }
-    }
-
-    // 4) Message pre-plain-text sender
-    phone = phoneFromPrePlainText(prePlainText);
-    if (phone) {
-      cachePeerPhone(chatName, phone);
-      return phone;
-    }
-
-    // 5) Any visible avatar in the open conversation
-    document.querySelectorAll("#main img[src]").forEach((img) => {
-      if (phone) return;
-      phone = phoneFromImgSrc(img.getAttribute("src"));
     });
-    if (phone) {
-      cachePeerPhone(chatName, phone);
-      return phone;
-    }
 
-    // 6) Matching chat-list row title/subtitle
-    const pane = findChatListPane();
-    if (pane && chatName) {
-      queryChatListCells(pane).forEach((cell) => {
-        if (phone) return;
-        if (getChatTitleFromRow(cell) !== chatName) return;
-        phone =
-          extractPhoneFromText(getChatTitleFromRow(cell)) ||
-          extractPhoneFromText(getPreviewFromRow(cell));
-        cell.querySelectorAll("img[src]").forEach((img) => {
-          if (phone) return;
-          phone = phoneFromImgSrc(img.getAttribute("src"));
-        });
-      });
-      if (phone) {
-        cachePeerPhone(chatName, phone);
-        return phone;
-      }
-    }
-
-    return "";
+    return best.phone ?
+      { phone: best.phone, score: best.score, display: best.display }
+    : null;
   }
 
   async function scrapePeerPhoneFromContactInfo() {
@@ -586,49 +653,20 @@
       document.querySelector('[data-testid="conversation-header"]');
     if (!header) return "";
 
-    const alreadyOpen =
-      document.querySelector('[data-testid="contact-info-drawer"]') ||
-      document.querySelector('[data-testid="drawer-right"]') ||
-      Array.from(document.querySelectorAll("header, div")).find((el) =>
-        /^(contact info|group info)$/i.test(
-          (el.textContent || "").replace(/\s+/g, " ").trim(),
-        ),
-      );
-
-    if (!alreadyOpen) {
+    let drawer = findContactInfoDrawer();
+    if (!drawer) {
       const clickTarget =
         header.querySelector(
           '[data-testid="conversation-info-header"], [data-testid="conversation-info-header-chat-title"]',
         ) || header;
       simulateUserClick(clickTarget);
-      await sleep(700);
+      for (let i = 0; i < 10 && !drawer; i += 1) {
+        await sleep(200);
+        drawer = findContactInfoDrawer();
+      }
     }
 
-    const roots = [
-      document.querySelector('[data-testid="contact-info-drawer"]'),
-      document.querySelector('[data-testid="drawer-right"]'),
-      document.querySelector('#app div[data-animate-drawer-inner="true"]'),
-      document.body,
-    ].filter(Boolean);
-
-    let phone = "";
-    for (const root of roots) {
-      if (phone) break;
-      root.querySelectorAll("span, div, [title]").forEach((el) => {
-        if (phone) return;
-        const t =
-          el.getAttribute?.("title") || (el.textContent || "").trim();
-        if (!t || t.length > 32) return;
-        const n = extractPhoneFromText(t);
-        if (n && n !== getMyWhatsAppNumber()) phone = n;
-      });
-      if (phone) break;
-      root.querySelectorAll("img[src]").forEach((img) => {
-        if (phone) return;
-        phone = phoneFromImgSrc(img.getAttribute("src"));
-      });
-    }
-
+    const found = extractPhoneFromContactInfoRoot(drawer);
     // Close drawer so we don't leave contact info open
     try {
       document.dispatchEvent(
@@ -642,24 +680,40 @@
       );
     } catch (_) {}
 
-    return phone;
+    return found;
   }
 
   async function ensurePeerPhone(chatName, prePlainText) {
-    let phone =
-      getPeerPhoneFromOpenChatDom(prePlainText) ||
-      getCachedPeerPhone(chatName);
-    if (phone) return phone;
-
-    // One contact-info scrape per chat name per session
-    const tried = (window.__waPeerPhoneTried = window.__waPeerPhoneTried || new Set());
     const key = String(chatName || "").trim() || "__open__";
+    const domPhone = getPeerPhoneFromOpenChatDom(prePlainText);
+    const cachedScore = getCachedPeerPhoneScore(key);
+    const domScore = domPhone ?
+      scorePhoneCandidate(domPhone, domPhone)
+    : 0;
+
+    // High-confidence already (e.g. title/header showed "+92 …")
+    if (domPhone && Math.max(domScore, cachedScore) >= 20) {
+      return getCachedPeerPhone(key) || domPhone;
+    }
+
+    // Always confirm via Contact info once — it's the ground truth in WA UI
+    const tried = (window.__waPeerPhoneTried =
+      window.__waPeerPhoneTried || new Set());
     if (!tried.has(key)) {
       tried.add(key);
-      phone = await scrapePeerPhoneFromContactInfo();
-      if (phone) cachePeerPhone(chatName || key, phone);
+      const scraped = await scrapePeerPhoneFromContactInfo();
+      if (scraped?.phone) {
+        cachePeerPhone(chatName || key, scraped.phone, {
+          score: scraped.score,
+          display: scraped.display,
+          source: "contact-info",
+        });
+        console.log("[WA] peer phone from Contact info →", scraped.phone, scraped.display);
+        return scraped.phone;
+      }
     }
-    return phone || "";
+
+    return getCachedPeerPhone(key) || domPhone || "";
   }
 
   function sleep(ms) {
@@ -2136,8 +2190,12 @@
       postQueue = postQueue.then(async () => {
         if (!isListening()) return;
         try {
-          // Resolve sender phone (newer WA data-ids no longer include it)
-          if (!normalizePhone(payload.from)) {
+          // Resolve sender phone from Contact info (ignore weak/wrong cache)
+          const existing = normalizePhone(payload.from);
+          const existingScore = existing ?
+            scorePhoneCandidate(existing, existing)
+          : 0;
+          if (!existing || existingScore < 20) {
             const resolved = await ensurePeerPhone(
               payload.chatName,
               payload.prePlainText,
@@ -2207,6 +2265,31 @@
           if (!id || seenIds.has(id)) return;
           if (!have.has(node)) eligible.push(node);
           baselineMessageIds.delete(id);
+        });
+      }
+
+      // Force-include the sidebar preview text if it matches an incoming bubble
+      const expectedPreview = String(options.expectedPreview || "").trim();
+      if (expectedPreview) {
+        const previewBody = expectedPreview.replace(/^[^:]*:\s*/, "").trim();
+        const have = new Set(eligible);
+        nodes.forEach((node) => {
+          const id = getMessageIdFromNode(node);
+          if (!id || seenIds.has(id)) return;
+          const text = normalizeMessageText(getMessageText(node));
+          if (
+            !text ||
+            !(
+              textsAreSameMessage(text, expectedPreview) ||
+              textsAreSameMessage(text, previewBody) ||
+              expectedPreview.includes(text) ||
+              text.includes(previewBody)
+            )
+          ) {
+            return;
+          }
+          baselineMessageIds.delete(id);
+          if (!have.has(node)) eligible.push(node);
         });
       }
 
@@ -2420,6 +2503,12 @@
       return true;
     }
 
+    function isOutgoingChatPreview(preview) {
+      return /^(you|me|yo|tú|vous|você)\s*:/i.test(
+        String(preview || "").trim(),
+      );
+    }
+
     function scanChatListForRuntimeIncoming() {
       if (!isListening()) return;
       const pane = findChatListPane();
@@ -2443,10 +2532,12 @@
           !!preview &&
           preview !== prev.preview &&
           !textsAreSameMessage(prev.preview, preview);
+        // Preview-only changes matter too (message read on phone then synced,
+        // or unread badge already cleared). Still ignore our own outgoing previews.
+        const syncedPreview =
+          previewChanged && !!preview && !isOutgoingChatPreview(preview);
         const hasNewActivity =
-          unreadIncreased || (unread > 0 && previewChanged);
-
-        chatListState.set(title, { preview, unread });
+          unreadIncreased || (unread > 0 && previewChanged) || syncedPreview;
 
         // User (or WA) opened a chat that had unread — badge cleared but messages still there
         if (
@@ -2454,22 +2545,38 @@
           unread < prev.unread &&
           isChatCurrentlyOpen(title)
         ) {
-          processUnreadCatchup(prev.unread);
+          chatListState.set(title, { preview, unread });
+          processConversationCatchup({ unreadHint: prev.unread });
           return;
         }
 
-        if (!hasNewActivity || !isChatRowWithinReadWindow(cell, unread)) return;
-
-        if (isChatCurrentlyOpen(title)) {
-          const newUnread =
-            unreadIncreased ? Math.max(1, unread - prev.unread) : unread;
-          processUnreadCatchup(newUnread);
+        if (!hasNewActivity || !isChatRowWithinReadWindow(cell, Math.max(unread, 1))) {
+          chatListState.set(title, { preview, unread });
           return;
         }
 
+        // Commit state only after we schedule work so a failed open can still
+        // re-detect the same preview on the next poll if needed.
         const newUnread =
           unreadIncreased ? Math.max(1, unread - prev.unread) : unread;
-        queueChatOpen({ row: cell, title, unreadCount: newUnread });
+
+        if (isChatCurrentlyOpen(title)) {
+          chatListState.set(title, { preview, unread });
+          processConversationCatchup({
+            unreadHint: Math.max(newUnread, 1),
+            expectedPreview: preview,
+          });
+          return;
+        }
+
+        chatListState.set(title, { preview, unread });
+        queueChatOpen({
+          row: cell,
+          title,
+          unreadCount: Math.max(newUnread, syncedPreview ? 1 : 0),
+          expectedPreview: preview,
+          reason: syncedPreview ? "preview-sync" : "unread",
+        });
       });
     }
 
@@ -2485,7 +2592,14 @@
 
     function queueChatOpen(item) {
       if (!item?.row || !item?.title || !isListening()) return;
-      if (isChatCurrentlyOpen(item.title)) return;
+      // Chat already open — catch up in place instead of skipping
+      if (isChatCurrentlyOpen(item.title)) {
+        processConversationCatchup({
+          unreadHint: item.unreadCount || 1,
+          expectedPreview: item.expectedPreview || "",
+        });
+        return;
+      }
       if (openingChat && openingChatTitle === item.title) return;
       if (chatOpenQueue.some((q) => q.title === item.title)) return;
       chatOpenQueue.push(item);
@@ -2497,6 +2611,7 @@
       const item = chatOpenQueue.shift();
       await openChatRow(item.row, item.title, {
         unreadCount: item.unreadCount || 0,
+        expectedPreview: item.expectedPreview || "",
       });
       if (isListening() && chatOpenQueue.length) {
         processChatOpenQueue();
@@ -2519,13 +2634,16 @@
       openingChat = true;
       openingChatTitle = title || "chat";
       const unreadCount = options.unreadCount || 0;
+      const expectedPreview = String(options.expectedPreview || "").trim();
       // Cache peer number when the chat title/list row exposes it
       const titlePhone = extractPhoneFromText(title);
-      if (titlePhone) cachePeerPhone(title, titlePhone);
-      row?.querySelectorAll?.("img[src]").forEach((img) => {
-        const p = phoneFromImgSrc(img.getAttribute("src"));
-        if (p) cachePeerPhone(title, p);
-      });
+      if (titlePhone) {
+        cachePeerPhone(title, titlePhone, {
+          score: scorePhoneCandidate(title, titlePhone),
+          display: title,
+          source: "chat-title",
+        });
+      }
       try {
         setReceiveStatus(`New message in: ${openingChatTitle}...`);
         const clicked = simulateUserClick(row);
@@ -2562,15 +2680,46 @@
         }
 
         openFailCounts.delete(openingChatTitle);
-        await sleep(600);
-        const dividerCount = getUnreadDividerCount();
-        const catchCount = Math.max(unreadCount || 0, dividerCount || 0);
-        processConversationCatchup({ unreadHint: catchCount });
-        await sleep(500);
-        processConversationCatchup({ unreadHint: catchCount });
+
+        // Retries: WA often marks read before bubbles finish rendering
+        const catchCount = Math.max(unreadCount || 0, getUnreadDividerCount() || 0, 1);
+        let captured = 0;
+        for (const waitMs of [400, 800, 1200, 2000]) {
+          await sleep(waitMs);
+          if (!isListening()) return;
+          captured += processConversationCatchup({
+            unreadHint: catchCount,
+            expectedPreview,
+          });
+          // If we were chasing a specific sidebar preview, stop once seen
+          if (expectedPreview) {
+            const nodes = findIncomingMessageRoots(
+              document.querySelector("#main") || document,
+            );
+            const matched = nodes.some((node) => {
+              const text = normalizeMessageText(getMessageText(node));
+              const previewBody = expectedPreview.replace(/^[^:]*:\s*/, "");
+              return (
+                text &&
+                (textsAreSameMessage(text, expectedPreview) ||
+                  textsAreSameMessage(text, previewBody) ||
+                  expectedPreview.includes(text) ||
+                  text.includes(previewBody))
+              );
+            });
+            if (matched) break;
+          } else if (captured > 0) {
+            break;
+          }
+        }
+
         seedVisibleConversationBaseline(baselineMessageIds);
         if (isListening()) {
-          setReceiveStatus("Listening for new messages...");
+          setReceiveStatus(
+            captured > 0 ?
+              `Captured ${captured} synced message${captured === 1 ? "" : "s"}`
+            : "Listening for new messages...",
+          );
           await sleep(getChatSwitchGapMs());
         }
       } catch (err) {
@@ -2601,19 +2750,36 @@
         if (!title) return;
         const unread = getUnreadCountFromCell(cell);
         const preview = getPreviewFromRow(cell);
-        // Refresh baseline so next live delta still works
+        const prev = chatListState.get(title) || { preview: "", unread: 0 };
+        const previewChanged =
+          !!preview &&
+          preview !== prev.preview &&
+          !textsAreSameMessage(prev.preview, preview) &&
+          !isOutgoingChatPreview(preview);
+
         chatListState.set(title, { preview, unread });
 
-        if (!unread || !isChatRowWithinReadWindow(cell, unread)) return;
+        if (
+          !unread &&
+          !previewChanged &&
+          !isChatRowWithinReadWindow(cell, unread)
+        ) {
+          return;
+        }
+        if (!unread && !previewChanged) return;
 
         if (openTitle && title.trim() === openTitle.trim()) {
-          processUnreadCatchup(unread);
+          processConversationCatchup({
+            unreadHint: Math.max(unread, 1),
+            expectedPreview: preview,
+          });
           return;
         }
         queueChatOpen({
           row: cell,
           title,
-          unreadCount: unread,
+          unreadCount: Math.max(unread, previewChanged ? 1 : 0),
+          expectedPreview: preview,
           reason: "reconnect-unread",
         });
       });
@@ -2705,6 +2871,9 @@
 
       // Cache own WhatsApp number for inbound create payload (to_user_id)
       getMyWhatsAppNumber();
+      // Reset peer-phone cache so Contact info is re-read with latest logic
+      window.__waPeerPhoneByChat = new Map();
+      window.__waPeerPhoneTried = new Set();
 
       startReceiveObservers();
       seedChatListState();

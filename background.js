@@ -85,6 +85,78 @@ function scheduleReconnect() {
 setTimeout(connectWebSocket, 0);
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === 'wa-post-incoming-chat') {
+    (async () => {
+      const hintUrl =
+        message.receiveUrlTemplate ||
+        message.apiUrl ||
+        'http://localhost:5173/api/chat/create/:token';
+      const auth = await readPosAuth(hintUrl);
+      if (!auth.token) {
+        sendResponse({ ok: false, error: 'Not logged in to AI POS' });
+        return;
+      }
+
+      const template =
+        message.receiveUrlTemplate ||
+        `${String(auth.origin || 'http://localhost:5173').replace(/\/+$/, '')}/api/chat/create/:token`;
+      const url = buildReceivePostUrl(template, auth.token);
+      if (!url) {
+        sendResponse({ ok: false, error: 'Invalid chat API URL' });
+        return;
+      }
+
+      const body = buildChatCreateBody(message.payload || {});
+
+      try {
+        const headers = await attachPosAuthHeaders(url, {
+          Accept: 'application/json',
+          'Content-Type': 'application/json'
+        });
+        const res = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body)
+        });
+        const text = await res.text();
+        let data = null;
+        try {
+          data = text ? JSON.parse(text) : null;
+        } catch {
+          data = { raw: text };
+        }
+
+        if (!res.ok) {
+          const errorInfo = formatApiErrorInfo({
+            status: res.status,
+            data,
+            error: extractApiErrorMessage(data),
+            url
+          });
+          sendResponse({
+            ok: false,
+            status: res.status,
+            error: errorInfo.summary,
+            url,
+            data,
+            errorInfo
+          });
+          return;
+        }
+
+        sendResponse({ ok: true, status: res.status, data, url, body });
+      } catch (err) {
+        const errorInfo = formatApiErrorInfo({ error: err.message || 'Network error' });
+        sendResponse({
+          ok: false,
+          error: errorInfo.summary,
+          errorInfo
+        });
+      }
+    })();
+    return true;
+  }
+
   if (message?.type === 'wa-get-pos-auth') {
     (async () => {
       const hintUrl = message.apiUrl || message.origin || 'http://localhost:5173/api/';
@@ -94,6 +166,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         : null;
       sendResponse({
         ...auth,
+        companyName: formatCompanyDisplayName(auth.companyName),
         urls
       });
     })();
@@ -129,18 +202,31 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
 
       if (!res.ok) {
+        const errorInfo = formatApiErrorInfo({
+          status: res.status,
+          data,
+          error: extractApiErrorMessage(data),
+          url
+        });
         sendResponse({
           ok: false,
           status: res.status,
-          error: data?.message || `HTTP ${res.status}`,
-          data
+          error: errorInfo.summary,
+          url,
+          data,
+          errorInfo
         });
         return;
       }
 
       sendResponse({ ok: true, status: res.status, data });
     } catch (err) {
-      sendResponse({ ok: false, error: err.message || 'Network error' });
+      const errorInfo = formatApiErrorInfo({ error: err.message || 'Network error' });
+      sendResponse({
+        ok: false,
+        error: errorInfo.summary,
+        errorInfo
+      });
     }
   })();
 

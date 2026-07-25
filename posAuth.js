@@ -65,21 +65,112 @@ async function readPosAuth(apiUrl) {
   return { token: '', companyId: '', companyName: '', origin: origins[0] || '', authenticated: false };
 }
 
+function formatCompanyDisplayName(name) {
+  if (!name) return '';
+  return String(name)
+    .replace(/\s*\([^)]*@[^)]*\)\s*/gi, '')
+    .trim();
+}
+
+function buildChatCreateBody(incoming) {
+  const senderId =
+    incoming.from ||
+    incoming.chatId?.replace(/@.*$/, '') ||
+    incoming.chatName ||
+    'unknown';
+  return {
+    to_user_id: senderId,
+    message: incoming.text,
+    message_id: incoming.messageId,
+    from_user_id: senderId
+  };
+}
+
+function extractApiErrorMessage(data) {
+  if (!data) return '';
+  if (typeof data === 'string') return data.trim();
+  const direct = data.message || data.error || data.detail;
+  if (direct) return String(direct);
+  if (Array.isArray(data.errors)) {
+    return data.errors
+      .map((entry) =>
+        typeof entry === 'string' ? entry : entry?.message || JSON.stringify(entry)
+      )
+      .join('; ');
+  }
+  if (data.errors && typeof data.errors === 'object') {
+    return Object.entries(data.errors)
+      .map(([key, value]) => {
+        const text = Array.isArray(value) ? value.join(', ') : String(value);
+        return `${key}: ${text}`;
+      })
+      .join('; ');
+  }
+  if (data.raw) return String(data.raw).trim().slice(0, 300);
+  return '';
+}
+
+function formatApiErrorInfo(response = {}) {
+  const status = response.status;
+  const url = response.url || '';
+  const detail = extractApiErrorMessage(response.data) || response.error || '';
+  const summary =
+    [status ? `HTTP ${status}` : '', detail].filter(Boolean).join(' — ') ||
+    'Request failed';
+  const tooltip = [summary, url].filter(Boolean).join('\n');
+  return { summary, detail, status, url, tooltip };
+}
+
+function buildReceivePostUrl(template, token) {
+  const base = String(template || '').trim();
+  if (!base || !token) return '';
+  if (base.includes(':pos_auth_token')) {
+    return base.replace(/:pos_auth_token/g, encodeURIComponent(token));
+  }
+  if (base.includes(':token')) {
+    return base.replace(/:token/g, encodeURIComponent(token));
+  }
+  if (/\/chats?\/create\/?$/i.test(base)) {
+    return `${base.replace(/\/?$/, '/')}${encodeURIComponent(token)}`;
+  }
+  return base;
+}
+
 function buildDefaultApiUrls(origin, companyId) {
   const base = String(origin || 'http://localhost:5173/').replace(/\/+$/, '');
-  const apiBase = `${base}/api`;
+  const apiBase = `${base}/api/chat`;
   const q = companyId ? `?company_id=${encodeURIComponent(companyId)}` : '';
   return {
-    fetchUrl: `${apiBase}/whatsapp_message/fetch-random${q}`,
-    updateUrl: `${apiBase}/whatsapp_message/mark-sent/:id${q}`,
-    notAvailableUrl: `${apiBase}/whatsapp_message/mark-not-available/:id${q}`,
-    receiveUrl: `${apiBase}/whatsapp_message/incoming`
+    fetchUrl: `${apiBase}/fetch-random${q}`,
+    updateUrl: `${apiBase}/mark-sent/:id`,
+    notAvailableUrl: `${apiBase}/mark-not-available/:id`,
+    receiveUrl: `${apiBase}/create/:token`
   };
+}
+
+function normalizeChatQueueItem(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = raw._id || raw.id || '';
+  const message = raw.message || raw.text || raw.body || '';
+  const number =
+    raw.number ||
+    raw.phone ||
+    raw.to_user_id ||
+    raw.toUserId ||
+    raw.recipient ||
+    '';
+  if (!id || !message || !number) return null;
+  return { _id: String(id), number: String(number), message: String(message) };
 }
 
 // Service worker (background.js)
 if (typeof self !== 'undefined' && typeof window === 'undefined') {
   self.readPosAuth = readPosAuth;
   self.buildDefaultApiUrls = buildDefaultApiUrls;
+  self.buildChatCreateBody = buildChatCreateBody;
+  self.buildReceivePostUrl = buildReceivePostUrl;
+  self.formatApiErrorInfo = formatApiErrorInfo;
+  self.normalizeChatQueueItem = normalizeChatQueueItem;
+  self.formatCompanyDisplayName = formatCompanyDisplayName;
   self.POS_TOKEN_COOKIE = POS_TOKEN_COOKIE;
 }

@@ -788,9 +788,37 @@
     return String(url || "").includes("whatsapp_message");
   }
 
+  /**
+   * Chat document id for mark-sent / mark-not-available.
+   * Prefer data._id from fetch-random — never message_id / whatsapp_message_id.
+   */
+  function extractChatDocumentId(raw) {
+    if (!raw || typeof raw !== "object") return "";
+    const candidates = [raw._id, raw.id];
+    for (const value of candidates) {
+      if (value == null || value === "") continue;
+      if (typeof value === "object") {
+        const oid = value.$oid || value.oid || value.id;
+        if (oid != null && String(oid).trim()) return String(oid).trim();
+        if (typeof value.toHexString === "function") {
+          try {
+            const hex = value.toHexString();
+            if (hex) return String(hex).trim();
+          } catch (_) {}
+        }
+        continue;
+      }
+      const s = String(value).trim();
+      if (!s || s === ":id" || s === "undefined" || s === "null") continue;
+      if (s === "[object Object]") continue;
+      return s;
+    }
+    return "";
+  }
+
   function normalizeChatQueueItem(raw) {
     if (!raw || typeof raw !== "object") return null;
-    const id = raw._id || raw.id || "";
+    const id = extractChatDocumentId(raw);
     const message = raw.message || raw.text || raw.body || "";
     const number =
       raw.number ||
@@ -801,7 +829,7 @@
       "";
     if (!id || !message || !number) return null;
     return {
-      _id: String(id),
+      _id: id,
       number: String(number),
       message: String(message),
     };
@@ -940,10 +968,21 @@
 
   function buildIdUrl(template, id) {
     if (!template) return "";
-    if (template.includes(":id")) {
-      return template.replace(/:id/g, encodeURIComponent(id));
+    const chatId = String(id ?? "").trim();
+    if (
+      !chatId ||
+      chatId === ":id" ||
+      chatId === "undefined" ||
+      chatId === "null"
+    ) {
+      throw new Error(
+        `Missing chat _id for URL (got ${JSON.stringify(id)}). Use data._id from fetch-random.`,
+      );
     }
-    return template.replace(/\/?$/, "/") + encodeURIComponent(id);
+    if (template.includes(":id")) {
+      return template.replace(/:id/g, encodeURIComponent(chatId));
+    }
+    return template.replace(/\/?$/, "/") + encodeURIComponent(chatId);
   }
 
   function apiRequest(method, url, body) {
@@ -956,11 +995,18 @@
             return;
           }
           if (!response?.ok) {
-            reject(
-              new Error(
-                response?.error || `Request failed (${response?.status || 0})`,
-              ),
-            );
+            const receivedId =
+              response?.data?.received_id ?? response?.data?.receivedId;
+            let msg =
+              response?.error || `Request failed (${response?.status || 0})`;
+            if (
+              receivedId != null &&
+              String(receivedId).trim() &&
+              !String(msg).includes("received_id=")
+            ) {
+              msg = `${msg} (received_id=${String(receivedId).trim()})`;
+            }
+            reject(new Error(msg));
             return;
           }
           resolve(response.data);
@@ -3121,6 +3167,10 @@
           continue;
         }
 
+        console.log("[WA] fetch-random item →", {
+          _id: item._id,
+          number: item.number,
+        });
         state.currentId = item._id;
         state.currentNumber = item.number;
         state.currentMessage = item.message;
@@ -3133,6 +3183,7 @@
           try {
             setSendStatus("Updating message status...");
             const updateUrl = buildIdUrl(state.updateUrl, item._id);
+            console.log("[WA] GET mark-sent →", updateUrl, { _id: item._id });
             await apiRequest("GET", updateUrl);
             if (!isActive()) break;
             setSendStatus(`Sent & marked: ${item.number}`);
@@ -3148,6 +3199,9 @@
           try {
             setSendStatus(`Marking ${item.number} as not available...`);
             const notAvailableUrl = buildIdUrl(state.notAvailableUrl, item._id);
+            console.log("[WA] GET mark-not-available →", notAvailableUrl, {
+              _id: item._id,
+            });
             await apiRequest("GET", notAvailableUrl);
             if (!isActive()) break;
             setSendStatus(`Marked not available: ${item.number}`);

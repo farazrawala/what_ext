@@ -115,24 +115,30 @@ function extractApiErrorMessage(data) {
   if (!data) return '';
   if (typeof data === 'string') return data.trim();
   const direct = data.message || data.error || data.detail;
-  if (direct) return String(direct);
-  if (Array.isArray(data.errors)) {
-    return data.errors
+  let text = direct ? String(direct) : '';
+  if (!text && Array.isArray(data.errors)) {
+    text = data.errors
       .map((entry) =>
         typeof entry === 'string' ? entry : entry?.message || JSON.stringify(entry)
       )
       .join('; ');
-  }
-  if (data.errors && typeof data.errors === 'object') {
-    return Object.entries(data.errors)
+  } else if (!text && data.errors && typeof data.errors === 'object') {
+    text = Object.entries(data.errors)
       .map(([key, value]) => {
-        const text = Array.isArray(value) ? value.join(', ') : String(value);
-        return `${key}: ${text}`;
+        const part = Array.isArray(value) ? value.join(', ') : String(value);
+        return `${key}: ${part}`;
       })
       .join('; ');
+  } else if (!text && data.raw) {
+    text = String(data.raw).trim().slice(0, 300);
   }
-  if (data.raw) return String(data.raw).trim().slice(0, 300);
-  return '';
+  // Backend 404s may include received_id so we can see what the worker sent
+  const receivedId = data.received_id ?? data.receivedId;
+  if (receivedId != null && String(receivedId).trim()) {
+    const rid = String(receivedId).trim();
+    text = text ? `${text} (received_id=${rid})` : `received_id=${rid}`;
+  }
+  return text;
 }
 
 function formatApiErrorInfo(response = {}) {
@@ -173,9 +179,38 @@ function buildDefaultApiUrls(origin, companyId) {
   };
 }
 
+/**
+ * Chat document id for mark-sent / mark-not-available.
+ * Prefer data._id from fetch-random — never message_id / whatsapp_message_id.
+ */
+function extractChatDocumentId(raw) {
+  if (!raw || typeof raw !== 'object') return '';
+  const candidates = [raw._id, raw.id];
+  for (const value of candidates) {
+    if (value == null || value === '') continue;
+    if (typeof value === 'object') {
+      const oid = value.$oid || value.oid || value.id;
+      if (oid != null && String(oid).trim()) return String(oid).trim();
+      if (typeof value.toHexString === 'function') {
+        try {
+          const hex = value.toHexString();
+          if (hex) return String(hex).trim();
+        } catch (_) {}
+      }
+      continue;
+    }
+    const s = String(value).trim();
+    // Reject placeholder / accidental bad ids
+    if (!s || s === ':id' || s === 'undefined' || s === 'null') continue;
+    if (s === '[object Object]') continue;
+    return s;
+  }
+  return '';
+}
+
 function normalizeChatQueueItem(raw) {
   if (!raw || typeof raw !== 'object') return null;
-  const id = raw._id || raw.id || '';
+  const id = extractChatDocumentId(raw);
   const message = raw.message || raw.text || raw.body || '';
   const number =
     raw.number ||
@@ -185,7 +220,7 @@ function normalizeChatQueueItem(raw) {
     raw.recipient ||
     '';
   if (!id || !message || !number) return null;
-  return { _id: String(id), number: String(number), message: String(message) };
+  return { _id: id, number: String(number), message: String(message) };
 }
 
 // Service worker (background.js)
@@ -196,6 +231,7 @@ if (typeof self !== 'undefined' && typeof window === 'undefined') {
   self.buildReceivePostUrl = buildReceivePostUrl;
   self.formatApiErrorInfo = formatApiErrorInfo;
   self.normalizeChatQueueItem = normalizeChatQueueItem;
+  self.extractChatDocumentId = extractChatDocumentId;
   self.formatCompanyDisplayName = formatCompanyDisplayName;
   self.POS_TOKEN_COOKIE = POS_TOKEN_COOKIE;
 }

@@ -53,9 +53,11 @@ If nothing is available (`success` false / empty data), the extension waits (min
 | **Example** | `http://localhost:5173/api/chat/mark-sent/64f1a2b3c4d5` |
 | **When**    | After WhatsApp send succeeds for that chat              |
 
-`:id` is replaced with the chat `_id` from fetch-random.
+`:id` is replaced with the chat `_id` from fetch-random (`data._id` only — not `message_id`).
 
 Sets status → `sent`.
+
+On failure, the API may return `received_id` showing exactly which id the extension sent.
 
 ---
 
@@ -97,13 +99,13 @@ Sets status → `not_available`.
 }
 ```
 
-| Field | Meaning |
-|---|---|
-| `from_user_id` | Customer WhatsApp number (who sent the message) — digits only |
-| `to_user_id` | Store / logged-in WhatsApp number (who received it) — digits only |
-| `message` | Message text |
-| `message_id` | WhatsApp message id |
-| `whatsapp_time` | WhatsApp message timestamp (ISO string preferred) |
+| Field           | Meaning                                                           |
+| --------------- | ----------------------------------------------------------------- |
+| `from_user_id`  | Customer WhatsApp number (who sent the message) — digits only     |
+| `to_user_id`    | Store / logged-in WhatsApp number (who received it) — digits only |
+| `message`       | Message text                                                      |
+| `message_id`    | WhatsApp message id                                               |
+| `whatsapp_time` | WhatsApp message timestamp (ISO string preferred)                 |
 
 **Headers:**
 
@@ -139,8 +141,8 @@ POST {origin}/api/chat/create/:token
 
 ## Quick reference
 
-| Tab / feature           | Method | Path                                  |
-| ----------------------- | ------ | ------------------------------------- |
+| Tab / feature           | Method | Path                                              |
+| ----------------------- | ------ | ------------------------------------------------- |
 | API → fetch next        | `GET`  | `/api/chat/fetch-random?company_id=…` |
 | API → mark sent         | `GET`  | `/api/chat/mark-sent/:id`             |
 | API → mark failed       | `GET`  | `/api/chat/mark-not-available/:id`    |

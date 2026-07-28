@@ -203,6 +203,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         options.body = JSON.stringify(body);
       }
 
+      console.log("[WA] API request →", method, url);
       const res = await fetch(url, options);
       const text = await res.text();
       let data = null;
@@ -218,6 +219,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           data,
           error: extractApiErrorMessage(data),
           url,
+        });
+        console.warn("[WA] API request failed →", {
+          method,
+          url,
+          status: res.status,
+          received_id: data?.received_id ?? data?.receivedId,
+          data,
         });
         sendResponse({
           ok: false,

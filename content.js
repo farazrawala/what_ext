@@ -9,7 +9,9 @@
   const DEFAULT_RECEIVE_DAYS = 1;
   const RECEIVE_CHAT_GAP_MIN_SEC = 2;
   const RECEIVE_CHAT_GAP_MAX_SEC = 3;
-  const RECEIVE_POLL_INTERVAL_MS = 4000;
+  const RECEIVE_POLL_INTERVAL_MS = 2000;
+  const RECEIVE_OPEN_STUCK_MS = 45000;
+  const RECEIVE_UNREAD_REQUEUE_MS = 6000;
 
   function getReceiveReadDays() {
     // Locked to 1 day for now
@@ -643,8 +645,8 @@
     });
 
     return best.phone ?
-      { phone: best.phone, score: best.score, display: best.display }
-    : null;
+        { phone: best.phone, score: best.score, display: best.display }
+      : null;
   }
 
   async function scrapePeerPhoneFromContactInfo() {
@@ -687,9 +689,7 @@
     const key = String(chatName || "").trim() || "__open__";
     const domPhone = getPeerPhoneFromOpenChatDom(prePlainText);
     const cachedScore = getCachedPeerPhoneScore(key);
-    const domScore = domPhone ?
-      scorePhoneCandidate(domPhone, domPhone)
-    : 0;
+    const domScore = domPhone ? scorePhoneCandidate(domPhone, domPhone) : 0;
 
     // High-confidence already (e.g. title/header showed "+92 …")
     if (domPhone && Math.max(domScore, cachedScore) >= 20) {
@@ -708,7 +708,11 @@
           display: scraped.display,
           source: "contact-info",
         });
-        console.log("[WA] peer phone from Contact info →", scraped.phone, scraped.display);
+        console.log(
+          "[WA] peer phone from Contact info →",
+          scraped.phone,
+          scraped.display,
+        );
         return scraped.phone;
       }
     }
@@ -786,6 +790,29 @@
 
   function isLegacyApiUrl(url) {
     return String(url || "").includes("whatsapp_message");
+  }
+
+  /** Keep fetch-random company_id in sync with current POS cookie. */
+  function withCompanyId(url, companyId) {
+    const raw = String(url || "").trim();
+    const id = String(companyId || "").trim();
+    if (!raw || !id) return raw;
+    try {
+      const u = new URL(raw);
+      if (!/\/api\/chat\/fetch-random\/?$/i.test(u.pathname)) return raw;
+      u.searchParams.set("company_id", id);
+      return u.toString();
+    } catch {
+      return raw;
+    }
+  }
+
+  function companyIdFromUrl(url) {
+    try {
+      return new URL(String(url || "")).searchParams.get("company_id") || "";
+    } catch {
+      return "";
+    }
   }
 
   /**
@@ -898,6 +925,28 @@
             el.value = response.urls[key];
           }
         });
+
+        // Always refresh company_id on fetch URL from current POS cookie
+        const fetchEl = sidebar.querySelector("#wa-fetch-url");
+        if (fetchEl && response.companyId) {
+          const nextFetch =
+            response.urls.fetchUrl ||
+            withCompanyId(fetchEl.value, response.companyId);
+          const currentId = companyIdFromUrl(fetchEl.value);
+          if (
+            !fetchEl.value.trim() ||
+            isLegacyApiUrl(fetchEl.value) ||
+            (currentId && currentId !== response.companyId) ||
+            !currentId
+          ) {
+            fetchEl.value = nextFetch;
+            console.log("[WA] refreshed fetch URL company_id →", {
+              from: currentId || "(none)",
+              to: response.companyId,
+              url: nextFetch,
+            });
+          }
+        }
         persistApiUrlsFromInputs();
       },
     );
@@ -951,9 +1000,7 @@
 
   function saveReceivedList(items) {
     const trimmed =
-      items.length > MAX_LIST_ITEMS ?
-        items.slice(0, MAX_LIST_ITEMS)
-      : items;
+      items.length > MAX_LIST_ITEMS ? items.slice(0, MAX_LIST_ITEMS) : items;
     sessionStorage.setItem(RECEIVED_LIST_KEY, JSON.stringify(trimmed));
   }
 
@@ -1062,28 +1109,77 @@
 
   function isOutgoingMessage(node) {
     if (!node) return false;
+    const row = findMessageRow(node) || node;
+
     if (
-      node.classList?.contains("message-out") ||
-      node.closest?.(".message-out")
-    )
+      row.classList?.contains("message-out") ||
+      row.closest?.(".message-out") ||
+      row.querySelector?.(".message-out")
+    ) {
       return true;
-    if (node.classList?.contains("message-in") || node.closest?.(".message-in"))
+    }
+    if (
+      row.classList?.contains("message-in") ||
+      row.closest?.(".message-in") ||
+      row.querySelector?.(".message-in")
+    ) {
       return false;
+    }
+
     const dataId =
-      node.getAttribute?.("data-id") ||
-      node.closest?.("[data-id]")?.getAttribute("data-id") ||
+      row.getAttribute?.("data-id") ||
+      row.closest?.("[data-id]")?.getAttribute("data-id") ||
       "";
     if (dataId.startsWith("true_")) return true;
     if (dataId.startsWith("false_")) return false;
-    // Outgoing bubbles usually show delivery ticks
+
+    // Delivery / clock ticks only appear on your own (outgoing) bubbles
     if (
-      node.querySelector?.(
-        '[data-icon="msg-check"], [data-icon="msg-dblcheck"], [data-icon="msg-dblcheck-ack"], [data-icon="msg-time"], [data-testid="msg-meta"] [data-icon]',
+      row.querySelector?.(
+        [
+          '[data-icon="msg-check"]',
+          '[data-icon="msg-dblcheck"]',
+          '[data-icon="msg-dblcheck-ack"]',
+          '[data-icon="msg-time"]',
+          '[data-icon="msg-dblcheck-ack-light"]',
+          '[data-icon="status-check"]',
+          '[data-icon="status-dblcheck"]',
+          '[data-icon="msg-check-light"]',
+          '[data-icon="msg-dblcheck-light"]',
+        ].join(", "),
       )
     ) {
       return true;
     }
+
+    const meta = row.querySelector?.('[data-testid="msg-meta"]');
+    if (meta) {
+      const label = `${meta.getAttribute("aria-label") || ""} ${meta.textContent || ""}`;
+      if (/\b(delivered|read|sent|played)\b/i.test(label)) return true;
+    }
+
+    // Green / right-side bubbles are outgoing
+    const main = document.querySelector("#main");
+    const bubble =
+      row.querySelector?.('[data-testid="msg-container"]') ||
+      row.querySelector?.(".copyable-text") ||
+      row;
+    if (main && bubble?.getBoundingClientRect) {
+      const m = main.getBoundingClientRect();
+      const b = bubble.getBoundingClientRect();
+      if (b.width > 20 && m.width > 0) {
+        const mid = m.left + m.width * 0.55;
+        if (b.left >= mid) return true;
+      }
+    }
+
     return false;
+  }
+
+  function isIncomingMessage(node) {
+    // Anything that isn't clearly outgoing is eligible as incoming.
+    // (Fail-open for receive — fail-closed was dropping real peer messages.)
+    return !!node && !isOutgoingMessage(node);
   }
 
   function findMessageRow(el) {
@@ -1108,6 +1204,7 @@
       // Only conversation panel messages
       if (!row.closest?.("#main")) return;
       if (isOutgoingMessage(row)) return;
+      if (!isIncomingMessage(row)) return; // skip ambiguous / own messages
       const dataId = row.getAttribute?.("data-id") || "";
       const text = getMessageText(row);
       if (!dataId && !text) return;
@@ -1188,9 +1285,7 @@
       : document.querySelector("#main") || document;
     let found = 0;
     scope
-      .querySelectorAll?.(
-        '[role="row"], [data-testid="msg-system"], div, span',
-      )
+      .querySelectorAll?.('[role="row"], [data-testid="msg-system"], div, span')
       ?.forEach((el) => {
         if (found) return;
         const text = (el.textContent || "").replace(/\s+/g, " ").trim();
@@ -1208,9 +1303,7 @@
       : document.querySelector("#main") || document;
     let match = null;
     scope
-      .querySelectorAll?.(
-        '[role="row"], [data-testid="msg-system"], div, span',
-      )
+      .querySelectorAll?.('[role="row"], [data-testid="msg-system"], div, span')
       ?.forEach((el) => {
         if (match) return;
         const text = (el.textContent || "").replace(/\s+/g, " ").trim();
@@ -1241,10 +1334,13 @@
     const withId = findMessageRow(node);
     if (!withId) return null;
     if (isOutgoingMessage(withId)) return null;
+    if (!isIncomingMessage(withId)) return null;
 
     const dataId = withId.getAttribute("data-id") || "";
     const parsed = parseChatIdFromDataId(dataId);
     if (parsed.fromMe === true) return null;
+    // Bare ids (no true_/false_): never treat as incoming unless DOM says so
+    if (parsed.fromMe == null && isOutgoingMessage(withId)) return null;
 
     const text = getMessageText(withId);
     if (!text) return null;
@@ -1274,7 +1370,12 @@
 
     if (!messageDate) return null;
 
-    if (!options.unreadCatchup && !options.isRuntime && !isWithinReadWindow(messageDate)) return null;
+    if (
+      !options.unreadCatchup &&
+      !options.isRuntime &&
+      !isWithinReadWindow(messageDate)
+    )
+      return null;
 
     const chatName = getOpenChatName();
     const customerPhone =
@@ -1382,28 +1483,49 @@
   }
 
   function getUnreadCountFromCell(cell) {
-    const badge =
-      cell.querySelector('[aria-label*="unread" i]') ||
-      cell.querySelector('[data-testid="icon-unread-count"]') ||
-      cell.querySelector('[data-testid="icon-unread"]') ||
-      cell.querySelector('[data-testid="unread-count"]') ||
-      cell.querySelector('[data-testid="unread-mention-count"]') ||
-      cell.querySelector('span[data-icon="unread-count"]') ||
-      cell.querySelector('[data-icon="unread-count"]');
-    if (badge) return parseUnreadCountFromBadge(badge);
+    if (!cell) return 0;
+    const selectors = [
+      '[aria-label*="unread" i]',
+      '[aria-label*="Unread"]',
+      '[aria-label*="unread"]',
+      '[data-testid="icon-unread-count"]',
+      '[data-testid="icon-unread"]',
+      '[data-testid="unread-count"]',
+      '[data-testid="unread-mention-count"]',
+      'span[data-icon="unread-count"]',
+      '[data-icon="unread-count"]',
+    ];
+    for (const sel of selectors) {
+      let badge = null;
+      try {
+        badge = cell.querySelector(sel);
+      } catch (_) {
+        badge = null;
+      }
+      if (badge) return parseUnreadCountFromBadge(badge);
+    }
 
     let found = 0;
-    cell.querySelectorAll("span").forEach((el) => {
+    cell.querySelectorAll("span, div").forEach((el) => {
       const text = (el.textContent || "").trim();
       if (!/^\d{1,3}$/.test(text)) return;
       const rect = el.getBoundingClientRect();
       if (
-        rect.width < 10 ||
-        rect.width > 36 ||
-        rect.height < 10 ||
-        rect.height > 36
-      )
+        rect.width < 8 ||
+        rect.width > 48 ||
+        rect.height < 8 ||
+        rect.height > 48
+      ) {
         return;
+      }
+      // Green unread pills sit on the right side of the row
+      const cellRect = cell.getBoundingClientRect();
+      if (
+        cellRect.width > 0 &&
+        rect.left < cellRect.left + cellRect.width * 0.55
+      ) {
+        return;
+      }
       found = Math.max(found, parseInt(text, 10) || 0);
     });
     return found > 0 ? Math.min(found, 99) : 0;
@@ -1793,10 +1915,10 @@
         <button id="wa-sidebar-close">&times;</button>
       </div>
         <div class="wa-tabs">
-        <button type="button" class="wa-tab" data-tab="manual">Manual</button>
-        <button type="button" class="wa-tab active" data-tab="api">API</button>
-        <button type="button" class="wa-tab" data-tab="received">Received</button>
-      </div>
+        <button type="button" class="wa-tab" data-tab="manual" style="display:none;" hidden>Manual</button>
+        <button type="button" class="wa-tab active" data-tab="api">Start Sending Messages</button>
+        <button type="button" class="wa-tab" data-tab="received" style="display:none;" hidden>Received</button>
+        </div>
       <div class="wa-sidebar-content">
         <div class="wa-tab-panel" data-panel="manual" style="display:none;">
           <label for="wa-numbers-input">Phone Numbers (comma-separated):</label>
@@ -1898,6 +2020,152 @@
     let scanDebounceTimer = null;
     let lastChatSwitchFinishedAt = 0;
     const baselineMessageIds = new Set();
+    let openingStartedAt = 0;
+    let lastReceiveHeartbeatAt = 0;
+    let lastUnreadRequeueAt = 0;
+
+    function findChatRowByTitle(title) {
+      const want = String(title || "").trim();
+      if (!want) return null;
+      const pane = findChatListPane();
+      if (!pane) return null;
+      for (const cell of queryChatListCells(pane)) {
+        if (getChatTitleFromRow(cell).trim() === want) return cell;
+      }
+      return null;
+    }
+
+    function markChatActivityHandled(title, preview, unread) {
+      if (!title) return;
+      chatListState.set(title, {
+        preview: preview || "",
+        unread: Number(unread) || 0,
+        handledPreview: preview || "",
+        pending: false,
+      });
+    }
+
+    function noteChatActivitySeen(title, preview, unread, pending = false) {
+      if (!title) return;
+      const prev = chatListState.get(title) || {};
+      chatListState.set(title, {
+        preview: preview || prev.preview || "",
+        unread: Number(unread) || 0,
+        handledPreview: prev.handledPreview || "",
+        pending: !!pending,
+      });
+    }
+
+    function clearStuckOpenIfNeeded() {
+      if (!openingChat || !openingStartedAt) return false;
+      if (Date.now() - openingStartedAt < RECEIVE_OPEN_STUCK_MS) return false;
+      console.warn("[WA] receive open stuck — resetting", {
+        title: openingChatTitle,
+        ms: Date.now() - openingStartedAt,
+      });
+      openingChat = false;
+      openingChatTitle = "";
+      openingStartedAt = 0;
+      lastChatSwitchFinishedAt = Date.now();
+      return true;
+    }
+
+    function requeueVisibleUnreadChats(force = false) {
+      if (!isListening()) return 0;
+      const now = Date.now();
+      if (
+        !force &&
+        lastUnreadRequeueAt &&
+        now - lastUnreadRequeueAt < RECEIVE_UNREAD_REQUEUE_MS
+      ) {
+        return 0;
+      }
+      lastUnreadRequeueAt = now;
+      const pane = findChatListPane();
+      if (!pane) {
+        console.warn("[WA] unread requeue: no chat list pane");
+        return 0;
+      }
+      let queued = 0;
+      const unreadSnap = [];
+      queryChatListCells(pane).forEach((cell) => {
+        const title = getChatTitleFromRow(cell);
+        if (!title) return;
+        const unread = getUnreadCountFromCell(cell);
+        const preview = getPreviewFromRow(cell);
+        if (unread > 0) {
+          unreadSnap.push({
+            title,
+            unread,
+            preview: String(preview).slice(0, 40),
+          });
+        }
+        if (!unread || unread < 1) {
+          noteChatActivitySeen(title, preview, unread, false);
+          return;
+        }
+        if (isOutgoingChatPreview(preview)) {
+          noteChatActivitySeen(title, preview, unread, false);
+          return;
+        }
+        const prev = chatListState.get(title) || {};
+        // Short cooldown after a recent open attempt for the same preview
+        if (
+          !force &&
+          prev.lastOpenAttemptAt &&
+          now - prev.lastOpenAttemptAt < 8000 &&
+          prev.handledPreview &&
+          textsAreSameMessage(prev.handledPreview, preview)
+        ) {
+          return;
+        }
+        // Always keep trying while unread badge remains (unless just captured)
+        if (
+          prev.handledPreview &&
+          textsAreSameMessage(prev.handledPreview, preview) &&
+          !prev.pending &&
+          prev.lastCapturedAt &&
+          now - prev.lastCapturedAt < 15000
+        ) {
+          return;
+        }
+
+        noteChatActivitySeen(title, preview, unread, true);
+        if (isChatCurrentlyOpen(title)) {
+          const n = processConversationCatchup({
+            unreadHint: Math.max(unread, 1),
+            expectedPreview: preview,
+          });
+          if (n > 0) {
+            markChatActivityHandled(title, preview, 0);
+            const st = chatListState.get(title) || {};
+            st.lastCapturedAt = now;
+            chatListState.set(title, st);
+          }
+          return;
+        }
+        queueChatOpen({
+          row: cell,
+          title,
+          unreadCount: unread,
+          expectedPreview: preview,
+          reason: "unread-requeue",
+        });
+        queued += 1;
+      });
+      if (unreadSnap.length) {
+        console.log("[WA] unread sidebar →", unreadSnap);
+      } else {
+        console.log("[WA] unread sidebar → (none detected)");
+      }
+      if (queued > 0) {
+        console.log("[WA] requeued unread chats →", queued);
+        setReceiveStatus(
+          `Listening — ${queued} unread chat${queued === 1 ? "" : "s"} waiting…`,
+        );
+      }
+      return queued;
+    }
 
     function getChatSwitchGapMs() {
       return getRandomDelay(RECEIVE_CHAT_GAP_MIN_SEC, RECEIVE_CHAT_GAP_MAX_SEC);
@@ -2129,9 +2397,7 @@
             normalizePhone(payload.chatName) ||
             "unknown",
           to_user_id:
-            normalizePhone(payload.to) ||
-            getMyWhatsAppNumber() ||
-            "unknown",
+            normalizePhone(payload.to) || getMyWhatsAppNumber() || "unknown",
           message: payload.text || "",
           message_id: payload.messageId || "",
           whatsapp_time: payload.receivedAt || payload.whatsapp_time || "",
@@ -2238,9 +2504,8 @@
         try {
           // Resolve sender phone from Contact info (ignore weak/wrong cache)
           const existing = normalizePhone(payload.from);
-          const existingScore = existing ?
-            scorePhoneCandidate(existing, existing)
-          : 0;
+          const existingScore =
+            existing ? scorePhoneCandidate(existing, existing) : 0;
           if (!existing || existingScore < 20) {
             const resolved = await ensurePeerPhone(
               payload.chatName,
@@ -2340,9 +2605,7 @@
       }
 
       const toCapture =
-        eligible.length > MAX_CATCHUP ?
-          eligible.slice(-MAX_CATCHUP)
-        : eligible;
+        eligible.length > MAX_CATCHUP ? eligible.slice(-MAX_CATCHUP) : eligible;
       if (!toCapture.length) return 0;
 
       const captureIds = new Set(
@@ -2400,7 +2663,8 @@
       if (captured > 0 || (!dividerCount && !sidebarUnread && nodeCount > 0)) {
         const stillPending = findIncomingMessageRoots(main).some((node) => {
           const id = getMessageIdFromNode(node);
-          if (!id || seenIds.has(id) || baselineMessageIds.has(id)) return false;
+          if (!id || seenIds.has(id) || baselineMessageIds.has(id))
+            return false;
           const ts = getMessageTimestamp(node);
           return !ts || isWithinReadWindow(ts);
         });
@@ -2540,9 +2804,13 @@
       cells.forEach((cell) => {
         const title = getChatTitleFromRow(cell);
         if (!title) return;
+        const preview = getPreviewFromRow(cell);
+        const unread = getUnreadCountFromCell(cell);
         chatListState.set(title, {
-          preview: getPreviewFromRow(cell),
-          unread: getUnreadCountFromCell(cell),
+          preview,
+          unread,
+          handledPreview: unread > 0 ? "" : preview,
+          pending: unread > 0,
         });
       });
       chatListSeeded = true;
@@ -2557,6 +2825,7 @@
 
     function scanChatListForRuntimeIncoming() {
       if (!isListening()) return;
+      clearStuckOpenIfNeeded();
       const pane = findChatListPane();
       if (!pane) return;
 
@@ -2571,19 +2840,32 @@
 
         const preview = getPreviewFromRow(cell);
         const unread = getUnreadCountFromCell(cell);
-        const prev = chatListState.get(title) || { preview: "", unread: 0 };
+        const prev = chatListState.get(title) || {
+          preview: "",
+          unread: 0,
+          handledPreview: "",
+          pending: false,
+        };
 
-        const unreadIncreased = unread > prev.unread;
+        const unreadIncreased = unread > (prev.unread || 0);
         const previewChanged =
           !!preview &&
           preview !== prev.preview &&
           !textsAreSameMessage(prev.preview, preview);
-        // Preview-only changes matter too (message read on phone then synced,
-        // or unread badge already cleared). Still ignore our own outgoing previews.
+        const previewNotHandled =
+          !!preview &&
+          !isOutgoingChatPreview(preview) &&
+          (!prev.handledPreview ||
+            !textsAreSameMessage(prev.handledPreview, preview));
         const syncedPreview =
-          previewChanged && !!preview && !isOutgoingChatPreview(preview);
+          (previewChanged || (unread > 0 && previewNotHandled)) &&
+          !!preview &&
+          !isOutgoingChatPreview(preview);
         const hasNewActivity =
-          unreadIncreased || (unread > 0 && previewChanged) || syncedPreview;
+          unreadIncreased ||
+          (unread > 0 && previewChanged) ||
+          (unread > 0 && previewNotHandled) ||
+          syncedPreview;
 
         // User (or WA) opened a chat that had unread — badge cleared but messages still there
         if (
@@ -2591,31 +2873,45 @@
           unread < prev.unread &&
           isChatCurrentlyOpen(title)
         ) {
-          chatListState.set(title, { preview, unread });
           processConversationCatchup({ unreadHint: prev.unread });
+          markChatActivityHandled(title, preview, unread);
           return;
         }
 
-        if (!hasNewActivity || !isChatRowWithinReadWindow(cell, Math.max(unread, 1))) {
-          chatListState.set(title, { preview, unread });
+        if (
+          !hasNewActivity ||
+          !isChatRowWithinReadWindow(cell, Math.max(unread, 1))
+        ) {
+          noteChatActivitySeen(title, preview, unread, prev.pending);
           return;
         }
 
-        // Commit state only after we schedule work so a failed open can still
-        // re-detect the same preview on the next poll if needed.
         const newUnread =
-          unreadIncreased ? Math.max(1, unread - prev.unread) : unread;
+          unreadIncreased ? Math.max(1, unread - (prev.unread || 0)) : unread;
 
         if (isChatCurrentlyOpen(title)) {
-          chatListState.set(title, { preview, unread });
-          processConversationCatchup({
+          const n = processConversationCatchup({
             unreadHint: Math.max(newUnread, 1),
             expectedPreview: preview,
           });
+          if (n > 0) {
+            markChatActivityHandled(title, preview, 0);
+            const st = chatListState.get(title) || {};
+            st.lastCapturedAt = Date.now();
+            chatListState.set(title, st);
+          } else {
+            noteChatActivitySeen(title, preview, unread, true);
+          }
           return;
         }
 
-        chatListState.set(title, { preview, unread });
+        noteChatActivitySeen(title, preview, unread, true);
+        console.log("[WA] queue chat open →", {
+          title,
+          unread,
+          preview: String(preview).slice(0, 60),
+          reason: syncedPreview ? "preview-sync" : "unread",
+        });
         queueChatOpen({
           row: cell,
           title,
@@ -2624,6 +2920,8 @@
           reason: syncedPreview ? "preview-sync" : "unread",
         });
       });
+
+      requeueVisibleUnreadChats(false);
     }
 
     function getUnreadCountFromRow(row) {
@@ -2653,9 +2951,22 @@
     }
 
     async function processChatOpenQueue() {
+      clearStuckOpenIfNeeded();
       if (!canOpenNextChat() || !chatOpenQueue.length) return;
       const item = chatOpenQueue.shift();
-      await openChatRow(item.row, item.title, {
+      // WhatsApp virtualizes the list — refresh the row from current DOM
+      const liveRow = findChatRowByTitle(item.title) || item.row;
+      if (!liveRow || !document.contains(liveRow)) {
+        console.warn("[WA] chat row missing, will requeue later →", item.title);
+        noteChatActivitySeen(
+          item.title,
+          item.expectedPreview || "",
+          item.unreadCount || 1,
+          true,
+        );
+        return;
+      }
+      await openChatRow(liveRow, item.title, {
         unreadCount: item.unreadCount || 0,
         expectedPreview: item.expectedPreview || "",
       });
@@ -2679,8 +2990,15 @@
 
       openingChat = true;
       openingChatTitle = title || "chat";
+      openingStartedAt = Date.now();
       const unreadCount = options.unreadCount || 0;
       const expectedPreview = String(options.expectedPreview || "").trim();
+      {
+        const st = chatListState.get(title) || {};
+        st.lastOpenAttemptAt = Date.now();
+        st.pending = true;
+        chatListState.set(title, st);
+      }
       // Cache peer number when the chat title/list row exposes it
       const titlePhone = extractPhoneFromText(title);
       if (titlePhone) {
@@ -2718,9 +3036,15 @@
         if (!opened) {
           const fails = (openFailCounts.get(openingChatTitle) || 0) + 1;
           openFailCounts.set(openingChatTitle, fails);
+          // Keep pending so unread-requeue will try again
+          noteChatActivitySeen(title, expectedPreview, unreadCount, true);
           setReceiveStatus(
             `Could not open "${openingChatTitle}" (try ${fails}/3).`,
           );
+          console.warn("[WA] open chat failed →", {
+            title: openingChatTitle,
+            fails,
+          });
           await sleep(800);
           return;
         }
@@ -2728,7 +3052,11 @@
         openFailCounts.delete(openingChatTitle);
 
         // Retries: WA often marks read before bubbles finish rendering
-        const catchCount = Math.max(unreadCount || 0, getUnreadDividerCount() || 0, 1);
+        const catchCount = Math.max(
+          unreadCount || 0,
+          getUnreadDividerCount() || 0,
+          1,
+        );
         let captured = 0;
         for (const waitMs of [400, 800, 1200, 2000]) {
           await sleep(waitMs);
@@ -2760,6 +3088,26 @@
         }
 
         seedVisibleConversationBaseline(baselineMessageIds);
+        const liveCell = findChatRowByTitle(title);
+        const liveUnread = liveCell ? getUnreadCountFromCell(liveCell) : 0;
+        const livePreview =
+          expectedPreview || (liveCell ? getPreviewFromRow(liveCell) : "");
+        if (captured > 0) {
+          // unread 0: ignore sticky badge so we don't re-open forever
+          markChatActivityHandled(title, livePreview, 0);
+          const st = chatListState.get(title) || {};
+          st.lastCapturedAt = Date.now();
+          st.pending = false;
+          chatListState.set(title, st);
+        } else {
+          // Opened but nothing captured — keep pending so we retry
+          noteChatActivitySeen(
+            title,
+            livePreview,
+            liveUnread || unreadCount,
+            true,
+          );
+        }
         if (isListening()) {
           setReceiveStatus(
             captured > 0 ?
@@ -2769,12 +3117,14 @@
           await sleep(getChatSwitchGapMs());
         }
       } catch (err) {
+        noteChatActivitySeen(title, expectedPreview, unreadCount, true);
         setReceiveStatus(`Read failed: ${err.message || "unknown error"}`);
         await sleep(800);
       } finally {
         lastChatSwitchFinishedAt = Date.now();
         openingChat = false;
         openingChatTitle = "";
+        openingStartedAt = 0;
       }
     }
 
@@ -2879,7 +3229,23 @@
 
       // Poll open chat + sidebar for new activity
       window.__waReceivePollTimer = setInterval(() => {
-        if (!isListening()) return;
+        const stopBtn = document.getElementById("wa-stop-listening");
+        const uiListening =
+          !!stopBtn &&
+          stopBtn.style.display !== "none" &&
+          !listeningManuallyStopped;
+
+        if (!isListening()) {
+          if (uiListening) {
+            console.warn(
+              "[WA] listen run dead but UI still active — restarting",
+            );
+            ensureReceiveListening({ forceRestart: true });
+          }
+          return;
+        }
+        lastReceiveHeartbeatAt = Date.now();
+        clearStuckOpenIfNeeded();
 
         // Re-scan open conversation for unread divider + new messages
         if (isConversationOpen()) {
@@ -2887,8 +3253,12 @@
           scanForIncomingMessages(document.querySelector("#main") || document);
         }
 
-        scanChatListForRuntimeIncoming();
-        processChatOpenQueue();
+        try {
+          scanChatListForRuntimeIncoming();
+          processChatOpenQueue();
+        } catch (err) {
+          console.warn("[WA] receive poll error →", err);
+        }
       }, RECEIVE_POLL_INTERVAL_MS);
     }
 
@@ -2974,11 +3344,7 @@
         setReceiveStatus("Stopped listening.");
         return;
       }
-      if (
-        !forceRestart &&
-        isListening() &&
-        receiveInfrastructureAlive()
-      ) {
+      if (!forceRestart && isListening() && receiveInfrastructureAlive()) {
         setListeningUi(true);
         setReceiveStatus("Listening for new messages...");
         return;
@@ -3031,16 +3397,111 @@
       );
     }
 
+    function findInvalidNumberDialog() {
+      const candidates = document.querySelectorAll(
+        '[role="dialog"], [data-animate-modal-popup="true"], [data-testid="popup-contents"]',
+      );
+      for (const el of candidates) {
+        const text = el.textContent || "";
+        if (
+          /isn['’]?t on WhatsApp/i.test(text) ||
+          /not on WhatsApp/i.test(text)
+        ) {
+          return el;
+        }
+      }
+      // Fallback: green OK modal with the phrase in body text
+      for (const el of document.querySelectorAll("div, span")) {
+        const text = (el.textContent || "").trim();
+        if (
+          text.length > 20 &&
+          text.length < 160 &&
+          /isn['’]?t on WhatsApp/i.test(text)
+        ) {
+          return (
+            el.closest('[role="dialog"]') ||
+            el.closest('[data-animate-modal-popup="true"]') ||
+            el.parentElement ||
+            el
+          );
+        }
+      }
+      return null;
+    }
+
+    function dismissInvalidNumberPopup() {
+      const dialog = findInvalidNumberDialog();
+      if (!dialog) return false;
+
+      const clickables = [
+        ...dialog.querySelectorAll(
+          'button, [role="button"], div[role="button"]',
+        ),
+      ];
+      const okBtn = clickables.find((b) =>
+        /^(ok|okay)$/i.test((b.textContent || "").trim()),
+      );
+      if (okBtn) {
+        simulateUserClick(okBtn);
+        console.log("[WA] dismissed invalid-number popup via OK");
+        return true;
+      }
+
+      // Escape + click outside / overlay
+      try {
+        document.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Escape",
+            code: "Escape",
+            keyCode: 27,
+            which: 27,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      } catch (_) {}
+
+      const overlay =
+        dialog.parentElement ||
+        document.querySelector('[data-animate-modal-backdrop="true"]') ||
+        document.body;
+      simulateUserClick(overlay);
+      console.log("[WA] dismissed invalid-number popup via click/Escape");
+      return true;
+    }
+
     async function clickSendWhenReady(timeoutMs = 20000) {
       const started = Date.now();
+      let invalidSeenAt = 0;
       while (Date.now() - started < timeoutMs) {
         if (!isActive()) return false;
+
+        if (findInvalidNumberDialog()) {
+          if (!invalidSeenAt) {
+            invalidSeenAt = Date.now();
+            setSendStatus("Number not on WhatsApp. Closing popup in 3s...");
+            console.log("[WA] invalid number popup detected");
+          } else if (Date.now() - invalidSeenAt >= 3000) {
+            dismissInvalidNumberPopup();
+            await sleep(300);
+            if (findInvalidNumberDialog()) dismissInvalidNumberPopup();
+            return false;
+          }
+          await sleep(200);
+          continue;
+        }
+
         const sendButton = findSendButton();
         if (sendButton) {
           sendButton.click();
           return true;
         }
         await sleep(400);
+      }
+      // Last chance: popup may have appeared at the end
+      if (findInvalidNumberDialog()) {
+        await sleep(3000);
+        dismissInvalidNumberPopup();
       }
       return false;
     }
@@ -3137,8 +3598,14 @@
 
         let payload = null;
         try {
+          console.log("[WA] fetch-random request →", state.fetchUrl);
           payload = await apiRequest("GET", state.fetchUrl);
+          console.log("[WA] fetch-random response →", payload);
         } catch (err) {
+          console.warn("[WA] fetch-random error →", {
+            url: state.fetchUrl,
+            message: err.message,
+          });
           if (!isActive()) break;
           const msg = err.message || "Fetch failed";
           const readyToRetry = await countdownSeconds(
@@ -3153,8 +3620,29 @@
 
         if (!isActive()) break;
 
-        const item = normalizeChatQueueItem(payload?.data);
+        const rawData = payload?.data;
+        const item = normalizeChatQueueItem(rawData);
         if (!payload?.success || !item) {
+          console.warn("[WA] fetch-random skipped (no usable chat) →", {
+            success: payload?.success,
+            hasData: rawData != null,
+            dataKeys:
+              rawData && typeof rawData === "object" ?
+                Object.keys(rawData)
+              : [],
+            rawData,
+            parsed: {
+              _id: extractChatDocumentId(rawData || {}),
+              message: rawData?.message || rawData?.text || rawData?.body || "",
+              number:
+                rawData?.number ||
+                rawData?.phone ||
+                rawData?.to_user_id ||
+                rawData?.toUserId ||
+                rawData?.recipient ||
+                "",
+            },
+          });
           if (!isActive()) break;
           const readyToRetry = await countdownSeconds(
             Math.ceil(
@@ -3170,6 +3658,7 @@
         console.log("[WA] fetch-random item →", {
           _id: item._id,
           number: item.number,
+          messagePreview: String(item.message).slice(0, 80),
         });
         state.currentId = item._id;
         state.currentNumber = item.number;
@@ -3277,6 +3766,11 @@
       const notAvailableUrl = document
         .getElementById("wa-not-available-url")
         .value.trim();
+      console.log("[WA] API Start URLs →", {
+        fetchUrl,
+        updateUrl,
+        notAvailableUrl,
+      });
       const minDelay =
         parseInt(document.getElementById("wa-min-delay").value, 10) || 2;
       const maxDelay =
@@ -3467,7 +3961,20 @@
     }
     window.__waListenWatchdog = setInterval(() => {
       if (listeningManuallyStopped || stopListening) return;
-      if (isListening() && receiveInfrastructureAlive()) return;
+      clearStuckOpenIfNeeded();
+      const heartbeatStale =
+        lastReceiveHeartbeatAt > 0 &&
+        Date.now() - lastReceiveHeartbeatAt > RECEIVE_POLL_INTERVAL_MS * 4;
+      if (isListening() && receiveInfrastructureAlive() && !heartbeatStale) {
+        // Soft keep-alive: force unread requeue if quiet too long
+        requeueVisibleUnreadChats(false);
+        return;
+      }
+      console.warn("[WA] receive watchdog restart →", {
+        listening: isListening(),
+        alive: receiveInfrastructureAlive(),
+        heartbeatStale,
+      });
       ensureReceiveListening({ forceRestart: true });
     }, 8000);
 

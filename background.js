@@ -238,6 +238,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return;
       }
 
+      console.log("[WA] API response ←", {
+        method,
+        url,
+        status: res.status,
+        success: data?.success,
+        dataKeys:
+          data?.data && typeof data.data === "object" ?
+            Object.keys(data.data)
+          : data && typeof data === "object" ?
+            Object.keys(data)
+          : [],
+        data,
+      });
       sendResponse({ ok: true, status: res.status, data });
     } catch (err) {
       const errorInfo = formatApiErrorInfo({

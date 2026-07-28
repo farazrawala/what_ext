@@ -4,7 +4,12 @@ const POS_COMPANY_COOKIE = 'pos_company_id';
 const POS_COMPANY_NAME_COOKIE = 'pos_company_name';
 
 /** POS dev server origins (cookie may live here while API URL points at :8000). */
-const FALLBACK_ORIGINS = ['http://localhost:5173/', 'http://127.0.0.1:5173/'];
+const FALLBACK_ORIGINS = [
+  'https://testv3.websitedemolynk.com/',
+  'https://testv3.websitedemolynk.com/pos/',
+  'http://localhost:5173/',
+  'http://127.0.0.1:5173/',
+];
 
 function decodeCookieValue(value) {
   if (!value) return '';

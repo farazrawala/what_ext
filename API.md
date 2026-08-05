@@ -1,14 +1,13 @@
 # Store Sync WhatsApp Sender — API URLs
 
-Base origin is taken from the POS login cookie host (dev default: `http://localhost:5173`).
+Base origin is taken from the POS login host.
 
-All chat REST paths are under:
+- Local: `http://localhost:5173` → `{origin}/api/chat/...`
+- Live: `https://testv3.websitedemolynk.com` → `{origin}/pos_admin/api/chat/...`
 
-```text
-{origin}/api/chat/...
-```
+Live AI POS sets `VITE_API_BASE_URL` to `/pos_admin/api` (backend). The SPA at `/pos/` is not the API — calling `/pos/api/...` returns HTML.
 
-Auth: POS cookie `pos_auth_token` is sent as `Authorization: Bearer <token>` on requests from the extension background.
+Auth: Live AI POS stores the JWT in **localStorage** (`authToken`). The extension reads it from an open POS tab (and still supports cookie `pos_auth_token` for older/dev builds). That token is sent as `Authorization: Bearer <token>` on requests from the extension background.
 
 ---
 
@@ -17,8 +16,9 @@ Auth: POS cookie `pos_auth_token` is sent as `Authorization: Bearer <token>` on 
 |             |                                                                             |
 | ----------- | --------------------------------------------------------------------------- |
 | **Method**  | `GET`                                                                       |
-| **URL**     | `{origin}/api/chat/fetch-random?company_id={companyId}`                     |
+| **URL**     | `{apiBase}/fetch-random?company_id={companyId}`                             |
 | **Example** | `http://localhost:5173/api/chat/fetch-random?company_id=abc123`             |
+| **Live**    | `https://testv3.websitedemolynk.com/pos_admin/api/chat/fetch-random?company_id=…` |
 | **When**    | While **Start** is running on the API tab — polls for the next chat to send |
 
 **Expected response (success):** JSON with a chat that has status `not_started`. The extension reads:
@@ -49,7 +49,7 @@ If nothing is available (`success` false / empty data), the extension waits (min
 |             |                                                         |
 | ----------- | ------------------------------------------------------- |
 | **Method**  | `GET`                                                   |
-| **URL**     | `{origin}/api/chat/mark-sent/:id`                       |
+| **URL**     | `{apiBase}/mark-sent/:id`                               |
 | **Example** | `http://localhost:5173/api/chat/mark-sent/64f1a2b3c4d5` |
 | **When**    | After WhatsApp send succeeds for that chat              |
 
@@ -66,7 +66,7 @@ On failure, the API may return `received_id` showing exactly which id the extens
 |             |                                                                       |
 | ----------- | --------------------------------------------------------------------- |
 | **Method**  | `GET`                                                                 |
-| **URL**     | `{origin}/api/chat/mark-not-available/:id`                            |
+| **URL**     | `{apiBase}/mark-not-available/:id`                                    |
 | **Example** | `http://localhost:5173/api/chat/mark-not-available/64f1a2b3c4d5`      |
 | **When**    | After WhatsApp send fails (invalid number / chat could not be opened) |
 
@@ -81,7 +81,7 @@ Sets status → `not_available`.
 |             |                                                           |
 | ----------- | --------------------------------------------------------- |
 | **Method**  | `POST`                                                    |
-| **URL**     | `{origin}/api/chat/create/:token`                         |
+| **URL**     | `{apiBase}/create/:token`                                 |
 | **Example** | `http://localhost:5173/api/chat/create/<pos_auth_token>`  |
 | **When**    | New incoming WhatsApp message is captured while listening |
 
@@ -122,10 +122,11 @@ Authorization: Bearer <pos_auth_token>
 When POS is connected, defaults are:
 
 ```text
-GET  {origin}/api/chat/fetch-random?company_id={companyId}
-GET  {origin}/api/chat/mark-sent/:id
-GET  {origin}/api/chat/mark-not-available/:id
-POST {origin}/api/chat/create/:token
+GET  {origin}/api/chat/fetch-random?company_id={companyId}          # local
+GET  {origin}/pos_admin/api/chat/fetch-random?company_id={companyId} # live
+GET  …/mark-sent/:id
+GET  …/mark-not-available/:id
+POST …/create/:token
 ```
 
 ---
@@ -141,9 +142,9 @@ POST {origin}/api/chat/create/:token
 
 ## Quick reference
 
-| Tab / feature           | Method | Path                                              |
-| ----------------------- | ------ | ------------------------------------------------- |
-| API → fetch next        | `GET`  | `/api/chat/fetch-random?company_id=…` |
-| API → mark sent         | `GET`  | `/api/chat/mark-sent/:id`             |
-| API → mark failed       | `GET`  | `/api/chat/mark-not-available/:id`    |
-| Received → save inbound | `POST` | `/api/chat/create/:token`             |
+| Tab / feature           | Method | Path (local) / Path (live)                                      |
+| ----------------------- | ------ | --------------------------------------------------------------- |
+| API → fetch next        | `GET`  | `/api/chat/fetch-random` · `/pos_admin/api/chat/fetch-random`   |
+| API → mark sent         | `GET`  | `/api/chat/mark-sent/:id` · `/pos_admin/api/chat/mark-sent/:id` |
+| API → mark failed       | `GET`  | `/api/chat/mark-not-available/:id` · same under `pos_admin`     |
+| Received → save inbound | `POST` | `/api/chat/create/:token` · `/pos_admin/api/chat/create/:token` |

@@ -90,6 +90,36 @@ function scheduleReconnect() {
 setTimeout(connectWebSocket, 0);
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "wa-pos-auth-sync") {
+    (async () => {
+      const auth = message.auth || {};
+      if (!auth.token) {
+        sendResponse({ ok: false });
+        return;
+      }
+      const payload = {
+        token: auth.token,
+        companyId: auth.companyId || "",
+        companyName: auth.companyName || "",
+        origin: normalizeApiOrigin(auth.origin || PREFERRED_POS_HOSTS[0]),
+        updatedAt: Date.now(),
+      };
+      try {
+        await chrome.storage.local.set({ wa_pos_auth_cache: payload });
+        console.log("[WA] POS auth synced from page →", {
+          origin: payload.origin,
+          companyId: payload.companyId
+            ? String(payload.companyId).slice(0, 8)
+            : "",
+        });
+        sendResponse({ ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: err?.message || String(err) });
+      }
+    })();
+    return true;
+  }
+
   if (message?.type === "wa-post-incoming-chat") {
     (async () => {
       const hintUrl =
@@ -104,7 +134,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
       const template =
         message.receiveUrlTemplate ||
-        `${String(auth.origin || "http://localhost:5173").replace(/\/+$/, "")}/api/chat/create/:token`;
+        `${resolveChatApiBase(auth.origin || "http://localhost:5173")}/create/:token`;
       const url = buildReceivePostUrl(template, auth.token);
       if (!url) {
         sendResponse({ ok: false, error: "Invalid chat API URL" });
@@ -169,8 +199,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "wa-get-pos-auth") {
     (async () => {
       const hintUrl =
-        message.apiUrl || message.origin || "http://localhost:5173/api/";
+        message.apiUrl ||
+        message.origin ||
+        "https://testv3.websitedemolynk.com/pos_admin/api/";
       const auth = await readPosAuth(hintUrl);
+      console.log("[WA] wa-get-pos-auth →", {
+        hintUrl,
+        authenticated: auth.authenticated,
+        origin: auth.origin,
+        companyId: auth.companyId ? String(auth.companyId).slice(0, 8) : "",
+      });
       const urls =
         auth.authenticated ?
           buildDefaultApiUrls(auth.origin, auth.companyId)
@@ -211,6 +249,30 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         data = text ? JSON.parse(text) : null;
       } catch {
         data = { raw: text };
+      }
+
+      const looksLikeHtml =
+        typeof text === "string" &&
+        /^\s*</.test(text) &&
+        /<!doctype html|<html[\s>]/i.test(text);
+      if (looksLikeHtml) {
+        const errorInfo = formatApiErrorInfo({
+          status: res.status,
+          data,
+          error:
+            "API returned HTML instead of JSON — check chat API base URL (live uses /pos_admin/api/chat)",
+          url,
+        });
+        console.warn("[WA] API returned non-JSON/HTML →", { method, url, status: res.status });
+        sendResponse({
+          ok: false,
+          status: res.status,
+          error: errorInfo.summary,
+          url,
+          data,
+          errorInfo,
+        });
+        return;
       }
 
       if (!res.ok) {

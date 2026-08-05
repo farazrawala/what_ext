@@ -7,11 +7,11 @@
   const MAX_SEEN_IDS = 500;
   const MAX_LIST_ITEMS = 50;
   const DEFAULT_RECEIVE_DAYS = 1;
-  const RECEIVE_CHAT_GAP_MIN_SEC = 2;
-  const RECEIVE_CHAT_GAP_MAX_SEC = 3;
-  const RECEIVE_POLL_INTERVAL_MS = 2000;
+  const RECEIVE_CHAT_GAP_MIN_SEC = 60;
+  const RECEIVE_CHAT_GAP_MAX_SEC = 120;
+  const RECEIVE_POLL_INTERVAL_MS = 30000;
   const RECEIVE_OPEN_STUCK_MS = 45000;
-  const RECEIVE_UNREAD_REQUEUE_MS = 6000;
+  const RECEIVE_UNREAD_REQUEUE_MS = 16000;
 
   function getReceiveReadDays() {
     // Locked to 1 day for now
@@ -792,6 +792,35 @@
     return String(url || "").includes("whatsapp_message");
   }
 
+  function isLocalhostApiUrl(url) {
+    try {
+      const host = new URL(String(url || "")).hostname;
+      return host === "localhost" || host === "127.0.0.1";
+    } catch {
+      return /localhost|127\.0\.0\.1/i.test(String(url || ""));
+    }
+  }
+
+  /** Replace stale localhost / legacy / wrong live API paths. */
+  function shouldReplaceApiUrl(currentUrl, authOrigin) {
+    const cur = String(currentUrl || "").trim();
+    if (!cur) return true;
+    if (isLegacyApiUrl(cur)) return true;
+    if (!authOrigin) return false;
+    try {
+      const authHost = new URL(authOrigin).host;
+      const curUrl = new URL(cur);
+      if (curUrl.host !== authHost) return true;
+      // Live demolyink must use /pos_admin/api/... (SPA /pos/api is HTML)
+      if (/websitedemolynk\.com$/i.test(curUrl.hostname)) {
+        if (!curUrl.pathname.includes("/pos_admin/api/")) return true;
+      }
+    } catch {
+      return isLocalhostApiUrl(cur);
+    }
+    return false;
+  }
+
   /** Keep fetch-random company_id in sync with current POS cookie. */
   function withCompanyId(url, companyId) {
     const raw = String(url || "").trim();
@@ -799,7 +828,8 @@
     if (!raw || !id) return raw;
     try {
       const u = new URL(raw);
-      if (!/\/api\/chat\/fetch-random\/?$/i.test(u.pathname)) return raw;
+      if (!/\/(?:pos_admin\/)?api\/chat\/fetch-random\/?$/i.test(u.pathname))
+        return raw;
       u.searchParams.set("company_id", id);
       return u.toString();
     } catch {
@@ -870,7 +900,7 @@
     const hintUrl =
       apiSettings.fetchUrl ||
       apiSettings.receiveUrl ||
-      "http://localhost:5173/api/chat/fetch-random";
+      "https://testv3.websitedemolynk.com/pos_admin/api/chat/fetch-random";
 
     chrome.runtime.sendMessage(
       { type: "wa-get-pos-auth", apiUrl: hintUrl },
@@ -882,9 +912,14 @@
         }
 
         if (!response?.authenticated) {
-          statusEl.textContent =
-            "POS auth: log in to AI POS in this browser first";
+          statusEl.textContent = "POS auth: keep AI POS tab open & logged in";
           statusEl.className = "wa-pos-auth-status is-muted wa-api-urls-hidden";
+          console.warn(
+            "[WA] POS not authenticated — open live POS and log in",
+            {
+              hintUrl,
+            },
+          );
           return;
         }
 
@@ -895,20 +930,15 @@
             `POS connected (company ${response.companyId.slice(0, 8)}…)`
           : "POS connected";
         statusEl.className = "wa-pos-auth-status is-ok wa-api-urls-hidden";
+        console.log("[WA] POS connected →", {
+          origin: response.origin,
+          companyId: response.companyId,
+          urls: response.urls,
+        });
 
         if (!response.urls) return;
 
-        const setIfEmpty = (id, value) => {
-          const el = sidebar.querySelector(`#${id}`);
-          if (!el || el.value.trim()) return;
-          el.value = value;
-        };
-
-        setIfEmpty("wa-fetch-url", response.urls.fetchUrl);
-        setIfEmpty("wa-update-url", response.urls.updateUrl);
-        setIfEmpty("wa-not-available-url", response.urls.notAvailableUrl);
-        setIfEmpty("wa-receive-url", response.urls.receiveUrl);
-
+        const authOrigin = response.origin || "";
         const urlFields = [
           ["wa-fetch-url", "fetchUrl"],
           ["wa-update-url", "updateUrl"],
@@ -917,12 +947,10 @@
         ];
         urlFields.forEach(([id, key]) => {
           const el = sidebar.querySelector(`#${id}`);
-          if (
-            el &&
-            response.urls?.[key] &&
-            (!el.value.trim() || isLegacyApiUrl(el.value))
-          ) {
-            el.value = response.urls[key];
+          const next = response.urls?.[key];
+          if (!el || !next) return;
+          if (shouldReplaceApiUrl(el.value, authOrigin)) {
+            el.value = next;
           }
         });
 
@@ -935,7 +963,7 @@
           const currentId = companyIdFromUrl(fetchEl.value);
           if (
             !fetchEl.value.trim() ||
-            isLegacyApiUrl(fetchEl.value) ||
+            shouldReplaceApiUrl(fetchEl.value, authOrigin) ||
             (currentId && currentId !== response.companyId) ||
             !currentId
           ) {
@@ -1917,7 +1945,7 @@
         <div class="wa-tabs">
         <button type="button" class="wa-tab" data-tab="manual" style="display:none;" hidden>Manual</button>
         <button type="button" class="wa-tab active" data-tab="api">Start Sending Messages</button>
-        <button type="button" class="wa-tab" data-tab="received" style="display:none;" hidden>Received</button>
+        <button type="button" class="wa-tab" data-tab="received">Received</button>
         </div>
       <div class="wa-sidebar-content">
         <div class="wa-tab-panel" data-panel="manual" style="display:none;">
@@ -1928,6 +1956,11 @@
         </div>
         <div class="wa-tab-panel" data-panel="api">
           <div id="wa-pos-auth-status" class="wa-pos-auth-status is-muted wa-api-urls-hidden" aria-hidden="true">Checking POS login…</div>
+          <div class="wa-receive-controls" style="display:flex; gap:10px; margin-bottom:10px; align-items:center;">
+            <div id="wa-api-listening-status" class="wa-send-status" style="margin:0; flex:1;">Listening…</div>
+            <button id="wa-api-start-listening" type="button" style="display:none;">Start Listening</button>
+            <button id="wa-api-stop-listening" type="button" style="display:none; background:#e74c3c; color:white;">Stop Listening</button>
+          </div>
           <div class="wa-api-urls-hidden" aria-hidden="true">
             <label for="wa-fetch-url">Fetch Chat URL (GET):</label>
             <input type="text" id="wa-fetch-url" placeholder="http://localhost:5173/api/chat/fetch-random?company_id=..." />
@@ -2011,6 +2044,44 @@
     let openingChat = false;
     let openingChatTitle = "";
     const chatOpenQueue = [];
+    function getNextListeningMessageCount() {
+      // "Next messages" ~= unread messages expected in chats currently queued
+      // to open (so we can capture their unread bubbles next).
+      try {
+        return chatOpenQueue.reduce((sum, item) => {
+          const n = Number(item?.unreadCount);
+          return sum + (Number.isFinite(n) ? n : 0);
+        }, 0);
+      } catch (_) {
+        return 0;
+      }
+    }
+    let lastNextListeningEstimate = 0;
+    // Base text for the API listening strip (without countdown suffix).
+    // Updated only when `setReceiveStatus()` runs.
+    let lastApiListeningStatusText = "";
+    let receiveCountdownTimer = null;
+    let nextReceivePollAt = 0;
+    function estimateNextListeningMessagesFromChatList() {
+      // Even when listening is stopped, estimate how many unread messages are
+      // currently present in the visible chat list (so users still see a
+      // “next” counter).
+      try {
+        const pane = findChatListPane();
+        if (!pane) return 0;
+
+        let total = 0;
+        queryChatListCells(pane).forEach((cell) => {
+          const unread = Number(getUnreadCountFromCell(cell));
+          if (Number.isFinite(unread) && unread > 0) total += unread;
+        });
+
+        // Keep UI stable / avoid outlier badges from exploding the number.
+        return Math.min(total, 999);
+      } catch (_) {
+        return 0;
+      }
+    }
     const openFailCounts = new Map();
     const chatListState = new Map(); // title -> { preview, unread }
     const recentByChat = new Map(); // chatName -> [{ text, at, source }]
@@ -2087,6 +2158,7 @@
         return 0;
       }
       let queued = 0;
+      let queuedMessages = 0;
       const unreadSnap = [];
       queryChatListCells(pane).forEach((cell) => {
         const title = getChatTitleFromRow(cell);
@@ -2152,6 +2224,7 @@
           reason: "unread-requeue",
         });
         queued += 1;
+        queuedMessages += unread;
       });
       if (unreadSnap.length) {
         console.log("[WA] unread sidebar →", unreadSnap);
@@ -2160,6 +2233,7 @@
       }
       if (queued > 0) {
         console.log("[WA] requeued unread chats →", queued);
+        lastNextListeningEstimate = queuedMessages;
         setReceiveStatus(
           `Listening — ${queued} unread chat${queued === 1 ? "" : "s"} waiting…`,
         );
@@ -2261,9 +2335,15 @@
     function setListeningUi(running) {
       const startBtn = document.getElementById("wa-start-listening");
       const stopBtn = document.getElementById("wa-stop-listening");
-      if (!startBtn || !stopBtn) return;
-      stopBtn.style.display = running ? "inline-block" : "none";
-      startBtn.style.display = running ? "none" : "inline-block";
+      const apiStartBtn = document.getElementById("wa-api-start-listening");
+      const apiStopBtn = document.getElementById("wa-api-stop-listening");
+
+      if (stopBtn) stopBtn.style.display = running ? "inline-block" : "none";
+      if (startBtn) startBtn.style.display = running ? "none" : "inline-block";
+      if (apiStopBtn)
+        apiStopBtn.style.display = running ? "inline-block" : "none";
+      if (apiStartBtn)
+        apiStartBtn.style.display = running ? "none" : "inline-block";
     }
 
     function stopReceiveListening() {
@@ -2271,6 +2351,9 @@
       listeningManuallyStopped = true;
       sessionStorage.setItem(LISTENING_STOPPED_KEY, "1");
       cancelAllReceiveRuns();
+      if (receiveCountdownTimer) clearInterval(receiveCountdownTimer);
+      receiveCountdownTimer = null;
+      nextReceivePollAt = 0;
       openingChat = false;
       openingChatTitle = "";
       chatOpenQueue.length = 0;
@@ -2302,6 +2385,31 @@
       const status = document.getElementById("wa-receive-status");
       if (status) {
         status.textContent = text;
+      }
+      const apiStatus = document.getElementById("wa-api-listening-status");
+      if (apiStatus) {
+        if (isListening()) {
+          // Append only for the "listening" states that represent upcoming work.
+          if (text.startsWith("Listening —")) {
+            const next =
+              lastNextListeningEstimate || getNextListeningMessageCount();
+            apiStatus.textContent =
+              next > 0 ?
+                `${text} Next: ${next} msg${next === 1 ? "" : "s"}`
+              : text;
+          } else {
+            apiStatus.textContent = text;
+          }
+        } else {
+          const next =
+            lastNextListeningEstimate ||
+            estimateNextListeningMessagesFromChatList();
+          apiStatus.textContent =
+            next > 0 ?
+              `${text} Next: ${next} msg${next === 1 ? "" : "s"}`
+            : text;
+        }
+        lastApiListeningStatusText = apiStatus.textContent;
       }
     }
 
@@ -2708,6 +2816,7 @@
       }
       const openTitle = getOpenChatName();
       let queued = 0;
+      let queuedMessages = 0;
 
       queryChatListCells(pane).forEach((cell) => {
         const title = getChatTitleFromRow(cell);
@@ -2717,6 +2826,7 @@
         if (openTitle && title.trim() === openTitle.trim()) {
           processUnreadCatchup(unread);
           queued += 1;
+          queuedMessages += unread;
           return;
         }
         queueChatOpen({
@@ -2726,9 +2836,11 @@
           reason: "startup-unread",
         });
         queued += 1;
+        queuedMessages += unread;
       });
 
       if (queued > 0) {
+        lastNextListeningEstimate = queuedMessages;
         setReceiveStatus(
           `Listening — opening ${queued} unread chat${queued === 1 ? "" : "s"}…`,
         );
@@ -2737,6 +2849,11 @@
         const unreadVisible = cells.filter(
           (c) => getUnreadCountFromCell(c) > 0,
         ).length;
+        const unreadVisibleMessages = cells.reduce((sum, c) => {
+          const n = Number(getUnreadCountFromCell(c));
+          return sum + (Number.isFinite(n) && n > 0 ? n : 0);
+        }, 0);
+        lastNextListeningEstimate = unreadVisibleMessages;
         setReceiveStatus(
           unreadVisible > 0 ?
             `Listening — ${unreadVisible} unread visible, retrying open…`
@@ -3197,6 +3314,8 @@
         clearInterval(window.__waReceivePollTimer);
         window.__waReceivePollTimer = null;
       }
+      if (receiveCountdownTimer) clearInterval(receiveCountdownTimer);
+      receiveCountdownTimer = null;
 
       const target = document.querySelector("#app") || document.body;
 
@@ -3259,7 +3378,28 @@
         } catch (err) {
           console.warn("[WA] receive poll error →", err);
         }
+
+        // Reset countdown target after this poll tick runs.
+        nextReceivePollAt = Date.now() + RECEIVE_POLL_INTERVAL_MS;
       }, RECEIVE_POLL_INTERVAL_MS);
+
+      // Countdown UI: “Next read in …” based on the poll loop.
+      // We keep it separate so `setReceiveStatus()` can remain the source
+      // of the main listening text/counters.
+      nextReceivePollAt = Date.now() + RECEIVE_POLL_INTERVAL_MS;
+      receiveCountdownTimer = setInterval(() => {
+        if (!isListening()) return;
+        const apiStatusEl = document.getElementById("wa-api-listening-status");
+        if (!apiStatusEl) return;
+        const seconds = Math.max(
+          0,
+          Math.ceil((nextReceivePollAt - Date.now()) / 1000),
+        );
+        apiStatusEl.textContent =
+          seconds > 0 ?
+            `${lastApiListeningStatusText} (Next read in ${seconds}s)`
+          : lastApiListeningStatusText;
+      }, 1000);
     }
 
     async function startListening() {
@@ -3362,7 +3502,18 @@
       .getElementById("wa-stop-listening")
       ?.addEventListener("click", stopReceiveListening);
     document
+      .getElementById("wa-api-stop-listening")
+      ?.addEventListener("click", stopReceiveListening);
+    document
       .getElementById("wa-start-listening")
+      ?.addEventListener("click", () => {
+        listeningManuallyStopped = false;
+        stopListening = false;
+        sessionStorage.removeItem(LISTENING_STOPPED_KEY);
+        ensureReceiveListening({ forceRestart: true });
+      });
+    document
+      .getElementById("wa-api-start-listening")
       ?.addEventListener("click", () => {
         listeningManuallyStopped = false;
         stopListening = false;
@@ -3948,6 +4099,8 @@
     applyPosAuthToSidebar(sidebar);
 
     rehydrateReceivedList();
+
+    lastNextListeningEstimate = estimateNextListeningMessagesFromChatList();
 
     // Always auto-start listening on sidebar launch (ignore prior Stop in this tab)
     sessionStorage.removeItem(LISTENING_STOPPED_KEY);

@@ -16,7 +16,8 @@ const BUILD_ROOT = path.join(ROOT, "build");
 /** Minify + obfuscate with terser + javascript-obfuscator. */
 const JS_FILES = ["content.js", "background.js", "posAuth.js", "popup.js"];
 
-/** Minify only (Chrome needs valid structure/keys). */
+/** Minify only (no obfuscator) — POS auth bridge/inject must stay reliable. */
+const MINIFY_ONLY_JS = ["posBridge.js", "posInject.js"];
 const CSS_FILES = ["sidebar.css"];
 const HTML_FILES = ["popup.html"];
 const JSON_FILES = ["manifest.json"];
@@ -168,6 +169,12 @@ function buildJson(srcRel, destDir) {
   writeBuilt(destDir, path.basename(srcRel), minifyJson(original), original);
 }
 
+async function buildMinifiedOnlyJs(srcRel, destDir) {
+  const original = readRequired(srcRel);
+  const minified = await minifyJs(original, srcRel);
+  writeBuilt(destDir, path.basename(srcRel), minified, original);
+}
+
 function writeInstallReadme(destDir, version) {
   const text = `Store Sync WhatsApp Sender — v${version}
 
@@ -177,14 +184,15 @@ Install (Chrome / Edge)
 3. Turn on "Developer mode" (top right).
 4. Click "Load unpacked".
 5. Select this folder (the one that contains manifest.json).
-6. Open https://web.whatsapp.com and refresh the page.
-7. Open the extension sidebar — version should show v${version}.
+6. Open https://testv3.websitedemolynk.com/pos and log in (keep this tab open).
+7. Refresh the POS tab once so auth syncs to the extension.
+8. Open https://web.whatsapp.com and refresh the page.
+9. Open the extension sidebar — version should show v${version}.
 
 Notes
-- Log in to AI POS in the same browser first (so cookies work).
-- This package is fully minified/obfuscated (harder to read, not impossible to copy).
-- Do not edit files inside this package unless you know what you are doing.
-- For a newer version, remove the old unpacked extension (or replace the folder) and load again.
+- Live POS auth uses localStorage authToken (not cookies). Keep the POS tab open.
+- This package is minified/obfuscated (harder to read, not impossible to copy).
+- For a newer version, remove the old unpacked extension and load again.
 
 Built from manifest version ${version}.
 `;
@@ -206,6 +214,11 @@ async function main() {
   console.log("JS (terser + javascript-obfuscator):");
   for (const file of JS_FILES) {
     await buildJs(file, destDir);
+  }
+
+  console.log("JS (minify only — POS bridge/inject):");
+  for (const file of MINIFY_ONLY_JS) {
+    await buildMinifiedOnlyJs(file, destDir);
   }
 
   console.log("CSS (minified):");

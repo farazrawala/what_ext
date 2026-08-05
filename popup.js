@@ -17,7 +17,7 @@ function setWelcome(text) {
 
 chrome.runtime.sendMessage({ type: 'wa-get-pos-auth' }, (response) => {
   if (chrome.runtime.lastError || !response?.authenticated) {
-    setWelcome('Welcome — log in to AI POS first');
+    setWelcome('Welcome — keep AI POS open & logged in');
     return;
   }
   const name = String(response.companyName || '').trim();

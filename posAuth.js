@@ -3,13 +3,15 @@ const POS_TOKEN_COOKIE = 'pos_auth_token';
 const POS_COMPANY_COOKIE = 'pos_company_id';
 const POS_COMPANY_NAME_COOKIE = 'pos_company_name';
 
-/** POS dev server origins (cookie may live here while API URL points at :8000). */
-const FALLBACK_ORIGINS = [
-  'https://testv3.websitedemolynk.com/',
-  'https://testv3.websitedemolynk.com/pos/',
-  'http://localhost:5173/',
-  'http://127.0.0.1:5173/',
+/** Known POS hosts to probe for auth cookies (order = preference). */
+const PREFERRED_POS_HOSTS = [
+  'https://testv3.websitedemolynk.com',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
 ];
+
+/** Paths to try when reading cookies for a host (Path=/pos cookies need /pos/). */
+const COOKIE_PATH_TRIES = ['/pos/', '/pos', '/'];
 
 function decodeCookieValue(value) {
   if (!value) return '';
@@ -20,54 +22,365 @@ function decodeCookieValue(value) {
   }
 }
 
-async function readCookiesFromOrigin(origin) {
+/** Origin used for host resolution — protocol + host only. */
+function normalizeApiOrigin(urlOrOrigin) {
+  try {
+    const u = new URL(urlOrOrigin);
+    return `${u.protocol}//${u.host}`;
+  } catch {
+    return String(urlOrOrigin || '')
+      .replace(/\/pos\/?$/i, '')
+      .replace(/\/+$/, '');
+  }
+}
+
+/**
+ * Chat API base path.
+ * Live AI POS (VITE_API_BASE_URL) uses /pos_admin/api — not the SPA /pos/ path.
+ * Local Vite proxies /api → backend, so /api/chat/...
+ */
+function resolveChatApiBase(origin) {
+  const base = normalizeApiOrigin(
+    origin || 'https://testv3.websitedemolynk.com',
+  );
+  let host = '';
+  try {
+    host = new URL(base).hostname;
+  } catch (_) {}
+  if (/websitedemolynk\.com$/i.test(host)) {
+    return `${base}/pos_admin/api/chat`;
+  }
+  return `${base}/api/chat`;
+}
+
+function cookieMapFromList(cookies) {
+  const map = new Map();
+  (cookies || []).forEach((c) => {
+    if (c?.name && !map.has(c.name)) map.set(c.name, c.value || '');
+  });
+  return map;
+}
+
+function authFromCookieMap(map) {
+  const token = decodeCookieValue(
+    map.get(POS_TOKEN_COOKIE) ||
+      map.get('authToken') ||
+      map.get('token') ||
+      map.get('accessToken') ||
+      '',
+  );
+  const companyId = decodeCookieValue(
+    map.get(POS_COMPANY_COOKIE) ||
+      map.get('companyId') ||
+      map.get('company_id') ||
+      '',
+  );
+  const companyName = decodeCookieValue(
+    map.get(POS_COMPANY_NAME_COOKIE) ||
+      map.get('companyName') ||
+      map.get('userName') ||
+      '',
+  );
+  return { token, companyId, companyName };
+}
+
+async function readCookiesFromUrl(url) {
   if (typeof chrome === 'undefined' || !chrome.cookies?.getAll) {
     return { token: '', companyId: '', companyName: '' };
   }
   try {
-    const cookies = await chrome.cookies.getAll({ url: origin });
-    const token = decodeCookieValue(
-      cookies.find((c) => c.name === POS_TOKEN_COOKIE)?.value || ''
-    );
-    const companyId = decodeCookieValue(
-      cookies.find((c) => c.name === POS_COMPANY_COOKIE)?.value || ''
-    );
-    const companyName = decodeCookieValue(
-      cookies.find((c) => c.name === POS_COMPANY_NAME_COOKIE)?.value || ''
-    );
-    return { token, companyId, companyName };
+    const cookies = await chrome.cookies.getAll({ url });
+    return authFromCookieMap(cookieMapFromList(cookies));
   } catch {
     return { token: '', companyId: '', companyName: '' };
   }
 }
 
 /**
- * Read POS auth cookies for an API URL (and common dev fallbacks).
- * @returns {{ token: string, companyId: string, origin: string, authenticated: boolean }}
+ * Domain-wide lookup — finds cookies even when Path is /pos or host-only.
  */
-async function readPosAuth(apiUrl) {
-  const tried = new Set();
-  const origins = [];
-
+async function readCookiesFromDomain(hostname) {
+  if (typeof chrome === 'undefined' || !chrome.cookies?.getAll || !hostname) {
+    return { token: '', companyId: '', companyName: '' };
+  }
   try {
-    const u = new URL(apiUrl);
-    origins.push(`${u.protocol}//${u.host}/`);
+    const host = String(hostname).replace(/^\./, '');
+    const variants = [host, `.${host}`];
+    // Also try parent domain (e.g. .websitedemolynk.com)
+    const parts = host.split('.');
+    if (parts.length > 2) {
+      variants.push(parts.slice(1).join('.'), `.${parts.slice(1).join('.')}`);
+    }
+
+    const merged = new Map();
+    for (const domain of variants) {
+      try {
+        const cookies = await chrome.cookies.getAll({ domain });
+        cookies.forEach((c) => {
+          if (c?.name && !merged.has(c.name)) merged.set(c.name, c.value || '');
+        });
+      } catch (_) {}
+    }
+    return authFromCookieMap(merged);
   } catch {
-    // ignore invalid URL
+    return { token: '', companyId: '', companyName: '' };
+  }
+}
+
+async function readCookiesForHost(baseHostUrl) {
+  const apiOrigin = normalizeApiOrigin(baseHostUrl);
+  let host = '';
+  try {
+    host = new URL(apiOrigin).hostname;
+  } catch (_) {}
+
+  // 1) Domain scan (most reliable for Path=/pos HttpOnly cookies)
+  if (host) {
+    const byDomain = await readCookiesFromDomain(host);
+    if (byDomain.token) return { ...byDomain, origin: apiOrigin };
   }
 
-  FALLBACK_ORIGINS.forEach((o) => origins.push(o));
+  // 2) URL probes including /pos paths
+  for (const p of COOKIE_PATH_TRIES) {
+    const url = `${apiOrigin}${p}`;
+    const byUrl = await readCookiesFromUrl(url);
+    if (byUrl.token) return { ...byUrl, origin: apiOrigin };
+  }
 
-  for (const origin of origins) {
-    if (tried.has(origin)) continue;
-    tried.add(origin);
-    const { token, companyId, companyName } = await readCookiesFromOrigin(origin);
-    if (token) {
-      return { token, companyId, companyName, origin, authenticated: true };
+  return { token: '', companyId: '', companyName: '', origin: apiOrigin };
+}
+
+/**
+ * Live AI POS stores auth in localStorage (authToken, companyData, userData),
+ * not cookies. Prefer chrome.storage cache (filled by posBridge.js), then
+ * inject a self-contained reader into open POS tabs.
+ */
+const POS_AUTH_STORAGE_KEY = 'wa_pos_auth_cache';
+
+/** Must stay self-contained — Chrome serializes this into the page; no outer refs. */
+function extractPosAuthFromPageStorageInline() {
+  function pick() {
+    for (var i = 0; i < arguments.length; i += 1) {
+      var v = localStorage.getItem(arguments[i]);
+      if (v != null && String(v).trim()) return String(v).trim();
+    }
+    return '';
+  }
+
+  var token = pick(
+    'authToken',
+    'pos_auth_token',
+    'token',
+    'accessToken',
+    'access_token',
+  );
+  if (!token) return { token: '', companyId: '', companyName: '' };
+
+  var companyId = pick('pos_company_id', 'companyId', 'company_id');
+  var companyName = pick(
+    'pos_company_name',
+    'companyName',
+    'company_name',
+    'userName',
+  );
+
+  try {
+    var company = JSON.parse(localStorage.getItem('companyData') || '{}');
+    if (!companyId) companyId = String(company._id || company.id || '').trim();
+    if (!companyName) {
+      companyName = String(
+        company.name || company.company_name || company.companyName || '',
+      ).trim();
+    }
+  } catch (e) {}
+
+  try {
+    var user = JSON.parse(localStorage.getItem('userData') || '{}');
+    if (!companyName) {
+      companyName = String(user.name || user.full_name || user.email || '').trim();
+    }
+    if (!companyId) {
+      var nested =
+        user.company && typeof user.company === 'object'
+          ? user.company._id || user.company.id
+          : '';
+      companyId = String(
+        user.company_id || user.companyId || nested || '',
+      ).trim();
+    }
+  } catch (e2) {}
+
+  return { token: token, companyId: companyId, companyName: companyName };
+}
+
+async function readAuthFromStorageCache() {
+  if (typeof chrome === 'undefined' || !chrome.storage?.local?.get) return null;
+  try {
+    const data = await chrome.storage.local.get(POS_AUTH_STORAGE_KEY);
+    const auth = data?.[POS_AUTH_STORAGE_KEY];
+    if (!auth?.token) return null;
+    if (auth.updatedAt && Date.now() - Number(auth.updatedAt) > 86400000) {
+      return null;
+    }
+    return {
+      token: auth.token,
+      companyId: auth.companyId || '',
+      companyName: auth.companyName || '',
+      origin: normalizeApiOrigin(auth.origin || PREFERRED_POS_HOSTS[0]),
+      authenticated: true,
+      source: 'storage',
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+async function readAuthFromPosTabs() {
+  if (
+    typeof chrome === 'undefined' ||
+    !chrome.tabs?.query ||
+    !chrome.scripting?.executeScript
+  ) {
+    return null;
+  }
+
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({});
+  } catch (err) {
+    console.warn('[WA] POS tab query failed →', err?.message || err);
+    return null;
+  }
+
+  tabs = tabs.filter((tab) => {
+    const url = String(tab.url || '');
+    return (
+      /https:\/\/testv3\.websitedemolynk\.com\//i.test(url) ||
+      /http:\/\/localhost:5173\//i.test(url) ||
+      /http:\/\/127\.0\.0\.1:5173\//i.test(url)
+    );
+  });
+
+  tabs.sort((a, b) => {
+    const aLive = /websitedemolynk\.com/i.test(a.url || '') ? 0 : 1;
+    const bLive = /websitedemolynk\.com/i.test(b.url || '') ? 0 : 1;
+    return aLive - bLive;
+  });
+
+  for (const tab of tabs) {
+    if (!tab?.id) continue;
+    try {
+      // Use a plain file inject — survives extension obfuscation builds
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ['posInject.js'],
+      });
+      // posInject posts wa-pos-auth-sync; give SW a moment then read cache
+      await new Promise((r) => setTimeout(r, 150));
+      const cached = await readAuthFromStorageCache();
+      if (cached?.authenticated) {
+        console.log('[WA] POS auth via posInject →', {
+          origin: cached.origin,
+          tabId: tab.id,
+        });
+        return cached;
+      }
+    } catch (err) {
+      console.warn('[WA] POS localStorage read failed →', {
+        tabId: tab.id,
+        url: tab.url,
+        error: err?.message || String(err),
+      });
+    }
+  }
+  return null;
+}
+
+/**
+ * Read POS auth from storage cache, open POS tab localStorage, or cookies.
+ * Live testv3 uses localStorage authToken (not cookies).
+ * @returns {{ token: string, companyId: string, companyName: string, origin: string, authenticated: boolean }}
+ */
+async function readPosAuth(apiUrl) {
+  const fromStorage = await readAuthFromStorageCache();
+  if (fromStorage?.authenticated) {
+    console.log('[WA] POS auth from storage cache →', fromStorage.origin);
+    return fromStorage;
+  }
+
+  const fromTab = await readAuthFromPosTabs();
+  if (fromTab?.authenticated) return fromTab;
+
+  const candidates = [];
+  const seen = new Set();
+
+  const pushHost = (value) => {
+    const origin = normalizeApiOrigin(value);
+    if (!origin || seen.has(origin)) return;
+    seen.add(origin);
+    candidates.push(origin);
+  };
+
+  PREFERRED_POS_HOSTS.forEach(pushHost);
+  try {
+    pushHost(apiUrl);
+  } catch (_) {}
+
+  let best = null;
+  for (const origin of candidates) {
+    const auth = await readCookiesForHost(origin);
+    if (!auth.token) continue;
+    const isLive = /websitedemolynk\.com$/i.test(
+      (() => {
+        try {
+          return new URL(origin).hostname;
+        } catch {
+          return origin;
+        }
+      })(),
+    );
+    if (isLive) {
+      console.log('[WA] POS auth from live cookie host →', origin);
+      return {
+        token: auth.token,
+        companyId: auth.companyId,
+        companyName: auth.companyName,
+        origin,
+        authenticated: true,
+        source: 'cookie',
+      };
+    }
+    if (!best) {
+      best = {
+        token: auth.token,
+        companyId: auth.companyId,
+        companyName: auth.companyName,
+        origin,
+        authenticated: true,
+        source: 'cookie',
+      };
     }
   }
 
-  return { token: '', companyId: '', companyName: '', origin: origins[0] || '', authenticated: false };
+  if (best) {
+    console.log('[WA] POS auth from cookie host →', best.origin);
+    return best;
+  }
+
+  console.warn(
+    '[WA] POS auth: no authToken/localStorage or pos_auth_token cookie found',
+    {
+      tried: candidates,
+      tip: 'Keep https://testv3.websitedemolynk.com/pos open while logged in, then reload the extension and refresh the POS tab',
+    },
+  );
+  return {
+    token: '',
+    companyId: '',
+    companyName: '',
+    origin: candidates[0] || '',
+    authenticated: false,
+  };
 }
 
 function formatCompanyDisplayName(name) {
@@ -118,7 +431,15 @@ function buildChatCreateBody(incoming) {
 
 function extractApiErrorMessage(data) {
   if (!data) return '';
-  if (typeof data === 'string') return data.trim();
+  if (typeof data === 'string') {
+    const raw = data.trim();
+    if (/^</.test(raw) || /<html[\s>]/i.test(raw)) {
+      const title = raw.match(/<title>([^<]*)<\/title>/i)?.[1]?.trim();
+      const h1 = raw.match(/<h1>([^<]*)<\/h1>/i)?.[1]?.trim();
+      return title || h1 || 'HTML error page';
+    }
+    return raw.slice(0, 300);
+  }
   const direct = data.message || data.error || data.detail;
   let text = direct ? String(direct) : '';
   if (!text && Array.isArray(data.errors)) {
@@ -135,7 +456,14 @@ function extractApiErrorMessage(data) {
       })
       .join('; ');
   } else if (!text && data.raw) {
-    text = String(data.raw).trim().slice(0, 300);
+    const raw = String(data.raw).trim();
+    if (/^</.test(raw) || /<html[\s>]/i.test(raw)) {
+      const title = raw.match(/<title>([^<]*)<\/title>/i)?.[1]?.trim();
+      const h1 = raw.match(/<h1>([^<]*)<\/h1>/i)?.[1]?.trim();
+      text = title || h1 || 'HTML error page';
+    } else {
+      text = raw.slice(0, 300);
+    }
   }
   // Backend 404s may include received_id so we can see what the worker sent
   const receivedId = data.received_id ?? data.receivedId;
@@ -173,14 +501,13 @@ function buildReceivePostUrl(template, token) {
 }
 
 function buildDefaultApiUrls(origin, companyId) {
-  const base = String(origin || 'http://localhost:5173/').replace(/\/+$/, '');
-  const apiBase = `${base}/api/chat`;
+  const apiBase = resolveChatApiBase(origin);
   const q = companyId ? `?company_id=${encodeURIComponent(companyId)}` : '';
   return {
     fetchUrl: `${apiBase}/fetch-random${q}`,
     updateUrl: `${apiBase}/mark-sent/:id`,
     notAvailableUrl: `${apiBase}/mark-not-available/:id`,
-    receiveUrl: `${apiBase}/create/:token`
+    receiveUrl: `${apiBase}/create/:token`,
   };
 }
 
@@ -238,5 +565,7 @@ if (typeof self !== 'undefined' && typeof window === 'undefined') {
   self.normalizeChatQueueItem = normalizeChatQueueItem;
   self.extractChatDocumentId = extractChatDocumentId;
   self.formatCompanyDisplayName = formatCompanyDisplayName;
+  self.normalizeApiOrigin = normalizeApiOrigin;
+  self.resolveChatApiBase = resolveChatApiBase;
   self.POS_TOKEN_COOKIE = POS_TOKEN_COOKIE;
 }

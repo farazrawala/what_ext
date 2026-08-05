@@ -342,3 +342,21 @@ input::placeholder {
   border-top: 1px solid #ccc;
   margin: 16px 0;
 }
+
+/* API-tab listening strip overrides (buttons inside flex containers shouldn't be full-width). */
+#wa-api-listening-status {
+  flex: 1;
+  min-width: 0;
+  word-break: normal;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#wa-api-start-listening,
+#wa-api-stop-listening {
+  width: auto !important;
+  flex: 0 0 auto;
+  margin-top: 0 !important;
+  padding: 10px 12px !important;
+}

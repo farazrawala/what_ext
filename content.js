@@ -7,11 +7,16 @@
   const MAX_SEEN_IDS = 500;
   const MAX_LIST_ITEMS = 50;
   const DEFAULT_RECEIVE_DAYS = 1;
+  // false → Received tab stays visible but reading is disabled (no Start/Stop).
+  const RECEIVE_READING_ENABLED = true;
+  const RECEIVE_DISABLED_STATUS = "Message reading is turned off.";
   const RECEIVE_CHAT_GAP_MIN_SEC = 60;
   const RECEIVE_CHAT_GAP_MAX_SEC = 120;
   const RECEIVE_POLL_INTERVAL_MS = 30000;
   const RECEIVE_OPEN_STUCK_MS = 45000;
   const RECEIVE_UNREAD_REQUEUE_MS = 16000;
+  const CHAT_MESSAGE_CURSOR_STORAGE_KEY = "wa_chat_message_cursor_v1";
+  const CHAT_CURSOR_PERSIST_DEBOUNCE_MS = 1000;
 
   function getReceiveReadDays() {
     // Locked to 1 day for now
@@ -896,11 +901,14 @@
     const statusEl = sidebar.querySelector("#wa-pos-auth-status");
     if (!statusEl) return;
 
+    const env =
+      typeof WA_ENV !== "undefined" && WA_ENV ?
+        WA_ENV
+      : { posOrigin: "http://localhost:8000", chatApiPath: "/api/chat" };
+    const defaultFetch = `${env.posOrigin}${env.chatApiPath || "/api/chat"}/fetch-random`;
     const apiSettings = loadApiSettings();
     const hintUrl =
-      apiSettings.fetchUrl ||
-      apiSettings.receiveUrl ||
-      "https://testv3.websitedemolynk.com/pos_admin/api/chat/fetch-random";
+      apiSettings.fetchUrl || apiSettings.receiveUrl || defaultFetch;
 
     chrome.runtime.sendMessage(
       { type: "wa-get-pos-auth", apiUrl: hintUrl },
@@ -1963,18 +1971,18 @@
           </div>
           <div class="wa-api-urls-hidden" aria-hidden="true">
             <label for="wa-fetch-url">Fetch Chat URL (GET):</label>
-            <input type="text" id="wa-fetch-url" placeholder="http://localhost:5173/api/chat/fetch-random?company_id=..." />
+            <input type="text" id="wa-fetch-url" placeholder="http://localhost:8000/api/chat/fetch-random?company_id=..." />
             <label for="wa-update-url">Mark Sent URL (GET):</label>
-            <input type="text" id="wa-update-url" placeholder="http://localhost:5173/api/chat/mark-sent/:id" />
+            <input type="text" id="wa-update-url" placeholder="http://localhost:8000/api/chat/mark-sent/:id" />
             <label for="wa-not-available-url">Mark Not Available URL (GET):</label>
-            <input type="text" id="wa-not-available-url" placeholder="http://localhost:5173/api/chat/mark-not-available/:id" />
+            <input type="text" id="wa-not-available-url" placeholder="http://localhost:8000/api/chat/mark-not-available/:id" />
             <p class="wa-hint">GET <code>fetch-random</code> returns one chat with status <code>not_started</code>. Use <code>:id</code> in mark URLs. Sent → <code>sent</code>; failed → <code>not_available</code>.</p>
           </div>
         </div>
         <div class="wa-tab-panel" data-panel="received" style="display:none;">
           <div class="wa-api-urls-hidden" aria-hidden="true">
             <label for="wa-receive-url">Chat API URL (POST):</label>
-            <input type="text" id="wa-receive-url" placeholder="http://localhost:5173/api/chat/create/:token" />
+            <input type="text" id="wa-receive-url" placeholder="http://localhost:8000/api/chat/create/:token" />
             <label for="wa-receive-days">Read messages from last (days):</label>
             <input type="number" id="wa-receive-days" value="1" min="1" max="1" readonly />
           </div>
@@ -2062,6 +2070,74 @@
     let lastApiListeningStatusText = "";
     let receiveCountdownTimer = null;
     let nextReceivePollAt = 0;
+
+    // Persisted per-chat cursor: last successfully captured message timestamp/id.
+    // Used to avoid re-posting messages that were already sent to your API.
+    const chatMessageCursorByChatName = new Map();
+    let chatCursorLoaded = false;
+    let cursorPersistTimer = null;
+    let cursorDirty = false;
+    async function loadChatMessageCursors() {
+      if (chatCursorLoaded) return;
+      chatCursorLoaded = true;
+      chatMessageCursorByChatName.clear();
+      try {
+        if (typeof chrome === "undefined" || !chrome.storage?.local?.get)
+          return;
+        const data = await chrome.storage.local.get(
+          CHAT_MESSAGE_CURSOR_STORAGE_KEY,
+        );
+        const stored = data?.[CHAT_MESSAGE_CURSOR_STORAGE_KEY];
+        if (!stored || typeof stored !== "object") return;
+        for (const [k, v] of Object.entries(stored)) {
+          const atMs = Number(v?.atMs);
+          if (!Number.isFinite(atMs)) continue;
+          chatMessageCursorByChatName.set(k, {
+            atMs,
+            messageId: String(v?.messageId || ""),
+          });
+        }
+      } catch (_) {}
+    }
+    async function persistChatMessageCursors() {
+      if (!cursorDirty) return;
+      cursorDirty = false;
+      try {
+        if (typeof chrome === "undefined" || !chrome.storage?.local?.set)
+          return;
+        const obj = {};
+        for (const [k, v] of chatMessageCursorByChatName.entries()) {
+          if (!v || !Number.isFinite(v.atMs)) continue;
+          obj[k] = { atMs: v.atMs, messageId: v.messageId || "" };
+        }
+        await chrome.storage.local.set({
+          [CHAT_MESSAGE_CURSOR_STORAGE_KEY]: obj,
+        });
+      } catch (_) {}
+    }
+    function schedulePersistChatMessageCursors() {
+      if (cursorPersistTimer) clearTimeout(cursorPersistTimer);
+      cursorPersistTimer = setTimeout(
+        persistChatMessageCursors,
+        CHAT_CURSOR_PERSIST_DEBOUNCE_MS,
+      );
+    }
+    function getChatCursorAtMs(chatKey) {
+      return chatMessageCursorByChatName.get(chatKey)?.atMs;
+    }
+    function updateChatCursor(chatKey, receivedAtIso, messageId) {
+      if (!chatKey) return;
+      const atMs = Date.parse(receivedAtIso);
+      if (!Number.isFinite(atMs)) return;
+      const prev = chatMessageCursorByChatName.get(chatKey);
+      if (prev && Number.isFinite(prev.atMs) && atMs <= prev.atMs) return;
+      chatMessageCursorByChatName.set(chatKey, {
+        atMs,
+        messageId: String(messageId || ""),
+      });
+      cursorDirty = true;
+      schedulePersistChatMessageCursors();
+    }
     function estimateNextListeningMessagesFromChatList() {
       // Even when listening is stopped, estimate how many unread messages are
       // currently present in the visible chat list (so users still see a
@@ -2337,13 +2413,15 @@
       const stopBtn = document.getElementById("wa-stop-listening");
       const apiStartBtn = document.getElementById("wa-api-start-listening");
       const apiStopBtn = document.getElementById("wa-api-stop-listening");
+      if (!RECEIVE_READING_ENABLED) running = null;
 
+      // running === null → reading disabled: hide both Start and Stop
+      const startDisplay = running === false ? "inline-block" : "none";
       if (stopBtn) stopBtn.style.display = running ? "inline-block" : "none";
-      if (startBtn) startBtn.style.display = running ? "none" : "inline-block";
+      if (startBtn) startBtn.style.display = startDisplay;
       if (apiStopBtn)
         apiStopBtn.style.display = running ? "inline-block" : "none";
-      if (apiStartBtn)
-        apiStartBtn.style.display = running ? "none" : "inline-block";
+      if (apiStartBtn) apiStartBtn.style.display = startDisplay;
     }
 
     function stopReceiveListening() {
@@ -2378,6 +2456,7 @@
       const allowedWhileStopped =
         text === "Stopped listening." ||
         text === "Listening stopped." ||
+        text === RECEIVE_DISABLED_STATUS ||
         text === "Starting listener…" ||
         text.startsWith("Waiting for WhatsApp") ||
         text.startsWith("Listen failed:");
@@ -2577,6 +2656,17 @@
       if (seenIds.has(payload.messageId)) return;
 
       const chatKey = payload.chatName || payload.from || "unknown";
+      const cursorAtMs = getChatCursorAtMs(chatKey);
+      const payloadAtMs = Date.parse(payload.receivedAt);
+      // Persisted cursor check: avoid re-posting messages already captured
+      // in a previous session (or earlier in this run).
+      if (
+        Number.isFinite(cursorAtMs) &&
+        Number.isFinite(payloadAtMs) &&
+        payloadAtMs <= cursorAtMs
+      ) {
+        return;
+      }
       const now = Date.now();
       const recent = (recentByChat.get(chatKey) || []).filter(
         (item) => now - item.at < 90000,
@@ -2622,6 +2712,7 @@
             if (resolved) payload.from = resolved;
           }
           await postIncomingToChatApi(payload);
+          updateChatCursor(chatKey, payload.receivedAt, payload.messageId);
           updateReceivedItemStatus(payload.messageId, "ok");
         } catch (err) {
           updateReceivedItemStatus(
@@ -2988,6 +3079,7 @@
         if (
           prev.unread > 0 &&
           unread < prev.unread &&
+          unread > 0 &&
           isChatCurrentlyOpen(title)
         ) {
           processConversationCatchup({ unreadHint: prev.unread });
@@ -3007,6 +3099,9 @@
           unreadIncreased ? Math.max(1, unread - (prev.unread || 0)) : unread;
 
         if (isChatCurrentlyOpen(title)) {
+          // Only process open-chat catchup when the unread badge is actually present.
+          // If unread is 0, rely on cursor-based dedupe instead of re-reading scrollback.
+          if (unread < 1) return;
           const n = processConversationCatchup({
             unreadHint: Math.max(newUnread, 1),
             expectedPreview: preview,
@@ -3029,13 +3124,16 @@
           preview: String(preview).slice(0, 60),
           reason: syncedPreview ? "preview-sync" : "unread",
         });
-        queueChatOpen({
-          row: cell,
-          title,
-          unreadCount: Math.max(newUnread, syncedPreview ? 1 : 0),
-          expectedPreview: preview,
-          reason: syncedPreview ? "preview-sync" : "unread",
-        });
+        const unreadCountToQueue = Math.max(newUnread, syncedPreview ? 1 : 0);
+        if (unreadCountToQueue > 0) {
+          queueChatOpen({
+            row: cell,
+            title,
+            unreadCount: unreadCountToQueue,
+            expectedPreview: preview,
+            reason: syncedPreview ? "preview-sync" : "unread",
+          });
+        }
       });
 
       requeueVisibleUnreadChats(false);
@@ -3321,7 +3419,12 @@
 
       const observer = new MutationObserver(() => {
         if (!isListening()) return;
-        scheduleConversationScan();
+        const openTitle = getOpenChatName();
+        // Only scan open chat when the unread badge is present.
+        // New-message events usually coincide with unread becoming > 0.
+        if (!openTitle) return;
+        const unread = getSidebarUnreadForTitle(openTitle);
+        if (unread > 0) scheduleConversationScan();
       });
 
       observer.observe(target, {
@@ -3368,8 +3471,15 @@
 
         // Re-scan open conversation for unread divider + new messages
         if (isConversationOpen()) {
-          catchupOpenConversationUnread();
-          scanForIncomingMessages(document.querySelector("#main") || document);
+          const openTitle = getOpenChatName();
+          const sidebarUnread =
+            openTitle ? getSidebarUnreadForTitle(openTitle) : 0;
+          if (sidebarUnread > 0) {
+            catchupOpenConversationUnread();
+            scanForIncomingMessages(
+              document.querySelector("#main") || document,
+            );
+          }
         }
 
         try {
@@ -3403,6 +3513,7 @@
     }
 
     async function startListening() {
+      if (!RECEIVE_READING_ENABLED) return;
       const receiveUrl =
         document.getElementById("wa-receive-url")?.value.trim() || "";
       if (receiveUrl && !/^https?:\/\//i.test(receiveUrl)) {
@@ -3422,6 +3533,7 @@
       chatListSeeded = false;
       chatOpenQueue.length = 0;
       lastChatSwitchFinishedAt = 0;
+      await loadChatMessageCursors();
       setListeningUi(true);
       setReceiveStatus("Listening for new messages...");
 
@@ -3478,6 +3590,11 @@
     }
 
     function ensureReceiveListening(options = {}) {
+      if (!RECEIVE_READING_ENABLED) {
+        setListeningUi(false);
+        setReceiveStatus(RECEIVE_DISABLED_STATUS);
+        return;
+      }
       const forceRestart = !!options.forceRestart;
       if (listeningManuallyStopped && !forceRestart) {
         setListeningUi(false);
@@ -4102,11 +4219,22 @@
 
     lastNextListeningEstimate = estimateNextListeningMessagesFromChatList();
 
-    // Always auto-start listening on sidebar launch (ignore prior Stop in this tab)
-    sessionStorage.removeItem(LISTENING_STOPPED_KEY);
-    listeningManuallyStopped = false;
-    stopListening = false;
-    ensureReceiveListening({ forceRestart: true });
+    // Do not auto-start listening on sidebar launch.
+    // Listening starts only after the user clicks "Start Listening".
+    sessionStorage.setItem(LISTENING_STOPPED_KEY, "1");
+    listeningManuallyStopped = true;
+    stopListening = true;
+    setListeningUi(false);
+    setReceiveStatus(
+      RECEIVE_READING_ENABLED ? "Stopped listening." : RECEIVE_DISABLED_STATUS,
+    );
+    if (!RECEIVE_READING_ENABLED) {
+      // Sending tab: hide the listening status row entirely
+      const apiListenRow = document
+        .getElementById("wa-api-listening-status")
+        ?.closest(".wa-receive-controls");
+      if (apiListenRow) apiListenRow.style.display = "none";
+    }
 
     // If hooks die after launch (reinjection / WA remount), restart automatically
     if (window.__waListenWatchdog) {

@@ -17,11 +17,13 @@ function setWelcome(text) {
 
 chrome.runtime.sendMessage({ type: 'wa-get-pos-auth' }, (response) => {
   if (chrome.runtime.lastError || !response?.authenticated) {
-    setWelcome('Welcome — keep AI POS open & logged in');
+    const posHint = response?.env?.posUrl || 'AI POS';
+    setWelcome(`Welcome — keep ${posHint} open & logged in`);
     return;
   }
   const name = String(response.companyName || '').trim();
-  setWelcome(name ? `Welcome ${name}` : 'Welcome');
+  const envLabel = response?.env?.label ? ` (${response.env.label})` : '';
+  setWelcome(name ? `Welcome ${name}${envLabel}` : `Welcome${envLabel}`);
 });
 
 async function getActiveTab() {
@@ -37,7 +39,7 @@ async function injectSidebar(tabId) {
   });
   await chrome.scripting.executeScript({
     target: { tabId },
-    files: ['content.js']
+    files: ['env.js', 'content.js']
   });
   await chrome.tabs.sendMessage(tabId, { type: 'wa-show-sidebar' });
   return true;

@@ -3,11 +3,31 @@ const POS_TOKEN_COOKIE = 'pos_auth_token';
 const POS_COMPANY_COOKIE = 'pos_company_id';
 const POS_COMPANY_NAME_COOKIE = 'pos_company_name';
 
+function getWaEnv() {
+  try {
+    if (typeof WA_ENV !== 'undefined' && WA_ENV) return WA_ENV;
+  } catch (_) {}
+  try {
+    if (typeof self !== 'undefined' && self.WA_ENV) return self.WA_ENV;
+  } catch (_) {}
+  try {
+    if (typeof window !== 'undefined' && window.WA_ENV) return window.WA_ENV;
+  } catch (_) {}
+  return {
+    name: 'local',
+    label: 'Local',
+    posOrigin: 'http://localhost:8000',
+    posUrl: 'http://localhost:8000/',
+    chatApiPath: '/api/chat',
+    preferredHosts: ['http://localhost:8000', 'http://127.0.0.1:8000'],
+    posTabMatch: ['http://localhost:8000/*', 'http://127.0.0.1:8000/*'],
+  };
+}
+
 /** Known POS hosts to probe for auth cookies (order = preference). */
-const PREFERRED_POS_HOSTS = [
-  'https://testv3.websitedemolynk.com',
-  'http://localhost:5173',
-  'http://127.0.0.1:5173',
+const PREFERRED_POS_HOSTS = getWaEnv().preferredHosts || [
+  'http://localhost:8000',
+  'http://127.0.0.1:8000',
 ];
 
 /** Paths to try when reading cookies for a host (Path=/pos cookies need /pos/). */
@@ -35,14 +55,24 @@ function normalizeApiOrigin(urlOrOrigin) {
 }
 
 /**
- * Chat API base path.
- * Live AI POS (VITE_API_BASE_URL) uses /pos_admin/api — not the SPA /pos/ path.
- * Local Vite proxies /api → backend, so /api/chat/...
+ * Chat API base path from active WA_ENV (or host heuristics as fallback).
+ * Live: /pos_admin/api/chat — Local: /api/chat
  */
 function resolveChatApiBase(origin) {
-  const base = normalizeApiOrigin(
-    origin || 'https://testv3.websitedemolynk.com',
-  );
+  const env = getWaEnv();
+  const fallbackOrigin = env.posOrigin || 'http://localhost:8000';
+  const base = normalizeApiOrigin(origin || fallbackOrigin);
+  const chatPath = String(env.chatApiPath || '/api/chat').replace(/\/$/, '');
+
+  try {
+    const envHost = new URL(normalizeApiOrigin(env.posOrigin || fallbackOrigin))
+      .host;
+    const baseHost = new URL(base).host;
+    if (envHost && baseHost === envHost) {
+      return `${base}${chatPath}`;
+    }
+  } catch (_) {}
+
   let host = '';
   try {
     host = new URL(base).hostname;
@@ -51,6 +81,27 @@ function resolveChatApiBase(origin) {
     return `${base}/pos_admin/api/chat`;
   }
   return `${base}/api/chat`;
+}
+
+/** True if a tab URL belongs to a known POS host for this env. */
+function isPosTabUrl(url) {
+  const raw = String(url || '');
+  if (!raw) return false;
+  const env = getWaEnv();
+  const hosts = env.preferredHosts || PREFERRED_POS_HOSTS;
+  for (const host of hosts) {
+    try {
+      const origin = normalizeApiOrigin(host);
+      if (raw.startsWith(origin + '/') || raw === origin) return true;
+    } catch (_) {}
+  }
+  return (
+    /https:\/\/testv3\.websitedemolynk\.com\//i.test(raw) ||
+    /http:\/\/localhost:8000\//i.test(raw) ||
+    /http:\/\/127\.0\.0\.1:8000\//i.test(raw) ||
+    /http:\/\/localhost:5173\//i.test(raw) ||
+    /http:\/\/127\.0\.0\.1:5173\//i.test(raw)
+  );
 }
 
 function cookieMapFromList(cookies) {
@@ -252,19 +303,14 @@ async function readAuthFromPosTabs() {
     return null;
   }
 
-  tabs = tabs.filter((tab) => {
-    const url = String(tab.url || '');
-    return (
-      /https:\/\/testv3\.websitedemolynk\.com\//i.test(url) ||
-      /http:\/\/localhost:5173\//i.test(url) ||
-      /http:\/\/127\.0\.0\.1:5173\//i.test(url)
-    );
-  });
+  tabs = tabs.filter((tab) => isPosTabUrl(tab.url));
 
+  const env = getWaEnv();
+  const preferLive = env.name === 'live';
   tabs.sort((a, b) => {
     const aLive = /websitedemolynk\.com/i.test(a.url || '') ? 0 : 1;
     const bLive = /websitedemolynk\.com/i.test(b.url || '') ? 0 : 1;
-    return aLive - bLive;
+    return preferLive ? aLive - bLive : bLive - aLive;
   });
 
   for (const tab of tabs) {
@@ -367,11 +413,12 @@ async function readPosAuth(apiUrl) {
     return best;
   }
 
+  const tipUrl = getWaEnv().posUrl || 'http://localhost:8000/';
   console.warn(
     '[WA] POS auth: no authToken/localStorage or pos_auth_token cookie found',
     {
       tried: candidates,
-      tip: 'Keep https://testv3.websitedemolynk.com/pos open while logged in, then reload the extension and refresh the POS tab',
+      tip: `Keep ${tipUrl} open while logged in, then reload the extension and refresh the POS tab`,
     },
   );
   return {
@@ -567,5 +614,7 @@ if (typeof self !== 'undefined' && typeof window === 'undefined') {
   self.formatCompanyDisplayName = formatCompanyDisplayName;
   self.normalizeApiOrigin = normalizeApiOrigin;
   self.resolveChatApiBase = resolveChatApiBase;
+  self.getWaEnv = getWaEnv;
+  self.isPosTabUrl = isPosTabUrl;
   self.POS_TOKEN_COOKIE = POS_TOKEN_COOKIE;
 }

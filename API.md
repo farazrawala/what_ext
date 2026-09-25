@@ -1,25 +1,42 @@
 # Store Sync WhatsApp Sender — API URLs
 
-Base origin is taken from the POS login host.
+Base origin comes from the **active environment** (`env.js` / build `--env`).
 
-- Local: `http://localhost:5173` → `{origin}/api/chat/...`
-- Live: `https://testv3.websitedemolynk.com` → `{origin}/pos_admin/api/chat/...`
+| Env | POS URL | Chat API base |
+| --- | ------- | ------------- |
+| **Local** | `http://localhost:8000/` | `{origin}/api/chat/...` |
+| **Live** | [https://testv3.websitedemolynk.com/pos/](https://testv3.websitedemolynk.com/pos/) | `{origin}/pos_admin/api/chat/...` |
 
 Live AI POS sets `VITE_API_BASE_URL` to `/pos_admin/api` (backend). The SPA at `/pos/` is not the API — calling `/pos/api/...` returns HTML.
 
 Auth: Live AI POS stores the JWT in **localStorage** (`authToken`). The extension reads it from an open POS tab (and still supports cookie `pos_auth_token` for older/dev builds). That token is sent as `Authorization: Bearer <token>` on requests from the extension background.
 
+Switch env (unpacked repo):
+
+```bash
+npm run env:local
+npm run env:live
+```
+
+Build packages:
+
+```bash
+npm run build:local   # → build/...-vX.Y-local/
+npm run build:live    # → build/...-vX.Y-live/
+npm run build:all
+```
+
 ---
 
 ## 1. Fetch next outbound chat (API send tab)
 
-|             |                                                                             |
-| ----------- | --------------------------------------------------------------------------- |
-| **Method**  | `GET`                                                                       |
-| **URL**     | `{apiBase}/fetch-random?company_id={companyId}`                             |
-| **Example** | `http://localhost:5173/api/chat/fetch-random?company_id=abc123`             |
+|             |                                                                                   |
+| ----------- | --------------------------------------------------------------------------------- |
+| **Method**  | `GET`                                                                             |
+| **URL**     | `{apiBase}/fetch-random?company_id={companyId}`                                   |
+| **Local**   | `http://localhost:8000/api/chat/fetch-random?company_id=abc123`                   |
 | **Live**    | `https://testv3.websitedemolynk.com/pos_admin/api/chat/fetch-random?company_id=…` |
-| **When**    | While **Start** is running on the API tab — polls for the next chat to send |
+| **When**    | While **Start** is running on the API tab — polls for the next chat to send       |
 
 **Expected response (success):** JSON with a chat that has status `not_started`. The extension reads:
 
@@ -50,7 +67,7 @@ If nothing is available (`success` false / empty data), the extension waits (min
 | ----------- | ------------------------------------------------------- |
 | **Method**  | `GET`                                                   |
 | **URL**     | `{apiBase}/mark-sent/:id`                               |
-| **Example** | `http://localhost:5173/api/chat/mark-sent/64f1a2b3c4d5` |
+| **Example** | `http://localhost:8000/api/chat/mark-sent/64f1a2b3c4d5` |
 | **When**    | After WhatsApp send succeeds for that chat              |
 
 `:id` is replaced with the chat `_id` from fetch-random (`data._id` only — not `message_id`).
@@ -67,7 +84,7 @@ On failure, the API may return `received_id` showing exactly which id the extens
 | ----------- | --------------------------------------------------------------------- |
 | **Method**  | `GET`                                                                 |
 | **URL**     | `{apiBase}/mark-not-available/:id`                                    |
-| **Example** | `http://localhost:5173/api/chat/mark-not-available/64f1a2b3c4d5`      |
+| **Example** | `http://localhost:8000/api/chat/mark-not-available/64f1a2b3c4d5`      |
 | **When**    | After WhatsApp send fails (invalid number / chat could not be opened) |
 
 `:id` is replaced with the chat `_id` from fetch-random.
@@ -82,7 +99,7 @@ Sets status → `not_available`.
 | ----------- | --------------------------------------------------------- |
 | **Method**  | `POST`                                                    |
 | **URL**     | `{apiBase}/create/:token`                                 |
-| **Example** | `http://localhost:5173/api/chat/create/<pos_auth_token>`  |
+| **Example** | `http://localhost:8000/api/chat/create/<pos_auth_token>`  |
 | **When**    | New incoming WhatsApp message is captured while listening |
 
 `:token` (or `:pos_auth_token`) is replaced with the POS auth token from cookies.
@@ -148,3 +165,10 @@ POST …/create/:token
 | API → mark sent         | `GET`  | `/api/chat/mark-sent/:id` · `/pos_admin/api/chat/mark-sent/:id` |
 | API → mark failed       | `GET`  | `/api/chat/mark-not-available/:id` · same under `pos_admin`     |
 | Received → save inbound | `POST` | `/api/chat/create/:token` · `/pos_admin/api/chat/create/:token` |
+
+// 4203
+// Always auto-start listening on sidebar launch (ignore prior Stop in this tab)
+sessionStorage.removeItem(LISTENING_STOPPED_KEY);
+listeningManuallyStopped = false;
+stopListening = false;
+ensureReceiveListening({ forceRestart: true });

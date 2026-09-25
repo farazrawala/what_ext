@@ -1,47 +1,65 @@
-# Extension build (share with friends)
+# Extension environments & build
 
-Create a **version-specific obfuscated package** under `build/` that you can zip and send. Friends install it with **Load unpacked** — they do not need your full repo.
+Two environments control which POS/API the extension talks to:
+
+| Env | POS URL | Chat API |
+| --- | ------- | -------- |
+| **local** | `http://localhost:8000/` | `http://localhost:8000/api/chat/...` |
+| **live** | [https://testv3.websitedemolynk.com/pos/](https://testv3.websitedemolynk.com/pos/) | `https://testv3.websitedemolynk.com/pos_admin/api/chat/...` |
+
+Config files:
+
+- `env/local.js` — local definitions
+- `env/live.js` — live definitions
+- `env.js` — **active** env for unpacked development (copied by switch/build)
+
+## Switch env (unpacked / Load unpacked from repo)
+
+```bash
+npm run env:local
+npm run env:live
+```
+
+Then reload the extension in `chrome://extensions`.
+
+## Create builds
+
+```bash
+npm install
+npm run build:local   # → build/store-sync-whatsapp-sender-v{version}-local/
+npm run build:live    # → build/store-sync-whatsapp-sender-v{version}-live/
+npm run build:all     # both
+npm run build         # alias for live
+```
 
 Every package file is processed:
 
 | File | Treatment |
 |------|-----------|
-| `content.js` | Minified (terser) + obfuscated |
+| `env.js` | Minified only (chosen env) |
+| `content.js` | Minified + obfuscated |
 | `background.js` | Minified + obfuscated |
 | `posAuth.js` | Minified + obfuscated |
 | `popup.js` | Minified + obfuscated |
-| `posBridge.js` | Minified only (POS localStorage → extension) |
-| `posInject.js` | Minified only (injectable auth reader) |
+| `posBridge.js` | Minified only |
+| `posInject.js` | Minified only |
 | `sidebar.css` | Minified |
 | `popup.html` | Minified |
-| `manifest.json` | Minified JSON |
-| `INSTALL.txt` | Plain install steps |
+| `manifest.json` | Minified JSON (POS `content_scripts` matches for that env) |
+| `INSTALL.txt` | Env-specific install steps |
 
-## Live POS auth note
+## Friend install (live example)
 
-Live AI POS stores the JWT in **localStorage** (`authToken`), not cookies.  
-`posBridge.js` runs on the POS tab and syncs auth into the extension. After install/reload, **refresh the POS tab** once, then open the extension popup.
-
-## Create a build
-
-```bash
-npm install
-npm run build
-```
-
-Output:
-
-```text
-build/store-sync-whatsapp-sender-v1.73/
-build/store-sync-whatsapp-sender-v1.73.zip   # if you zip it
-```
-
-## Friend install
-
-1. Load unpacked the build folder.
-2. Open/login [https://testv3.websitedemolynk.com/pos](https://testv3.websitedemolynk.com/pos) and **refresh that tab**.
+1. Load unpacked `build/store-sync-whatsapp-sender-v*-live/`.
+2. Open/login [https://testv3.websitedemolynk.com/pos](https://testv3.websitedemolynk.com/pos/) and **refresh that tab**.
 3. Open the extension popup — should show **Welcome …**.
 4. Open WhatsApp Web and use the sidebar.
+
+## Friend install (local example)
+
+1. Load unpacked `build/store-sync-whatsapp-sender-v*-local/`.
+2. Open/login `http://localhost:8000/` and refresh that tab.
+3. Open WhatsApp Web and use the sidebar.
 
 ## Limits
 

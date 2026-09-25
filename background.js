@@ -1,7 +1,7 @@
 let ws = null;
 let reconnectTimer = null;
 
-importScripts("posAuth.js");
+importScripts("env.js", "posAuth.js");
 
 async function attachPosAuthHeaders(url, headers) {
   const auth = await readPosAuth(url);
@@ -122,10 +122,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "wa-post-incoming-chat") {
     (async () => {
+      const env = typeof getWaEnv === "function" ? getWaEnv() : null;
+      const defaultOrigin = env?.posOrigin || "http://localhost:8000";
       const hintUrl =
         message.receiveUrlTemplate ||
         message.apiUrl ||
-        "http://localhost:5173/api/chat/create/:token";
+        `${resolveChatApiBase(defaultOrigin)}/create/:token`;
       const auth = await readPosAuth(hintUrl);
       if (!auth.token) {
         sendResponse({ ok: false, error: "Not logged in to AI POS" });
@@ -134,7 +136,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
       const template =
         message.receiveUrlTemplate ||
-        `${resolveChatApiBase(auth.origin || "http://localhost:5173")}/create/:token`;
+        `${resolveChatApiBase(auth.origin || defaultOrigin)}/create/:token`;
       const url = buildReceivePostUrl(template, auth.token);
       if (!url) {
         sendResponse({ ok: false, error: "Invalid chat API URL" });
@@ -198,13 +200,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "wa-get-pos-auth") {
     (async () => {
-      const hintUrl =
-        message.apiUrl ||
-        message.origin ||
-        "https://testv3.websitedemolynk.com/pos_admin/api/";
+      const env = typeof getWaEnv === "function" ? getWaEnv() : null;
+      const defaultHint =
+        env ?
+          `${resolveChatApiBase(env.posOrigin)}/`
+        : "http://localhost:8000/api/chat/";
+      const hintUrl = message.apiUrl || message.origin || defaultHint;
       const auth = await readPosAuth(hintUrl);
       console.log("[WA] wa-get-pos-auth →", {
         hintUrl,
+        env: env?.name,
         authenticated: auth.authenticated,
         origin: auth.origin,
         companyId: auth.companyId ? String(auth.companyId).slice(0, 8) : "",
@@ -217,6 +222,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         ...auth,
         companyName: formatCompanyDisplayName(auth.companyName),
         urls,
+        env: env ? { name: env.name, label: env.label, posUrl: env.posUrl } : null,
       });
     })();
     return true;

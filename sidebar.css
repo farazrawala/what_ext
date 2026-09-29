@@ -360,3 +360,68 @@ input::placeholder {
   margin-top: 0 !important;
   padding: 10px 12px !important;
 }
+
+/* Settings tab */
+.wa-sidebar-content .wa-settings-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.wa-sidebar-content .wa-settings-check input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  accent-color: #25d366;
+  cursor: pointer;
+}
+
+.wa-sidebar-content .wa-settings-reset {
+  background: #fff;
+  color: #075e54;
+  border: 1px solid #075e54;
+}
+
+.wa-sidebar-content .wa-settings-reset:hover {
+  background: #f0f2f5;
+}
+
+/* Received list: per-message post progress */
+.wa-post-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 3px;
+  font-size: 11px;
+  color: #667781;
+}
+
+.wa-post-progress[hidden],
+.wa-sidebar-content .wa-retry-now[hidden] {
+  display: none !important;
+}
+
+.wa-post-progress-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.wa-sidebar-content .wa-retry-now {
+  width: auto;
+  margin: 0;
+  padding: 2px 8px;
+  font-size: 11px;
+  background: #fff;
+  color: #075e54;
+  border: 1px solid #075e54;
+  border-radius: 10px;
+  flex: 0 0 auto;
+}
+
+.wa-sidebar-content .wa-retry-now:hover {
+  background: #e7f6ef;
+}

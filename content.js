@@ -4,23 +4,97 @@
   const SEEN_MSG_KEY = "wa_seen_incoming_ids";
   const RECEIVED_LIST_KEY = "wa_received_list";
   const LISTENING_STOPPED_KEY = "wa_listening_stopped";
-  const MAX_SEEN_IDS = 500;
-  const MAX_LIST_ITEMS = 50;
-  const DEFAULT_RECEIVE_DAYS = 1;
-  // false → Received tab stays visible but reading is disabled (no Start/Stop).
-  const RECEIVE_READING_ENABLED = true;
+  const RECEIVE_SETTINGS_KEY = "wa_receive_settings";
   const RECEIVE_DISABLED_STATUS = "Message reading is turned off.";
-  const RECEIVE_CHAT_GAP_MIN_SEC = 60;
-  const RECEIVE_CHAT_GAP_MAX_SEC = 120;
-  const RECEIVE_POLL_INTERVAL_MS = 30000;
-  const RECEIVE_OPEN_STUCK_MS = 45000;
-  const RECEIVE_UNREAD_REQUEUE_MS = 16000;
+
+  // Tunables edited on the Settings tab (saved in localStorage). Times are
+  // entered in seconds; applyReceiveSettings() converts them to ms.
+  const RECEIVE_SETTINGS_FIELDS = [
+    { key: "readingEnabled", label: "Enable message reading", type: "bool", def: true },
+    { key: "receiveDays", label: "Read messages from last (days)", min: 1, max: 30, def: 1 },
+    { key: "chatGapMinSec", label: "Min gap between chats (seconds)", min: 5, max: 3600, def: 60 },
+    { key: "chatGapMaxSec", label: "Max gap between chats (seconds)", min: 5, max: 3600, def: 120 },
+    { key: "pollIntervalSec", label: "Check for new messages every (seconds)", min: 5, max: 600, def: 30 },
+    { key: "openStuckSec", label: "Give up opening a chat after (seconds)", min: 10, max: 600, def: 45 },
+    { key: "unreadRequeueSec", label: "Re-check unread badges every (seconds)", min: 5, max: 600, def: 16 },
+    { key: "postRetrySec", label: "Retry failed API posts every (seconds)", min: 10, max: 3600, def: 60 },
+    { key: "maxSeenIds", label: "Remember captured message IDs (count)", min: 50, max: 5000, def: 500 },
+    { key: "maxListItems", label: "Received list size (messages)", min: 10, max: 500, def: 50 },
+  ];
+
+  function defaultReceiveSettings() {
+    const out = {};
+    RECEIVE_SETTINGS_FIELDS.forEach((f) => (out[f.key] = f.def));
+    return out;
+  }
+
+  function sanitizeReceiveSettings(raw) {
+    const out = defaultReceiveSettings();
+    RECEIVE_SETTINGS_FIELDS.forEach((f) => {
+      const v = raw?.[f.key];
+      if (f.type === "bool") {
+        if (typeof v === "boolean") out[f.key] = v;
+        return;
+      }
+      const n = Math.round(Number(v));
+      if (Number.isFinite(n)) out[f.key] = Math.min(f.max, Math.max(f.min, n));
+    });
+    if (out.chatGapMaxSec < out.chatGapMinSec) {
+      out.chatGapMaxSec = out.chatGapMinSec;
+    }
+    return out;
+  }
+
+  function loadReceiveSettings() {
+    try {
+      const raw = localStorage.getItem(RECEIVE_SETTINGS_KEY);
+      return sanitizeReceiveSettings(raw ? JSON.parse(raw) : {});
+    } catch {
+      return defaultReceiveSettings();
+    }
+  }
+
+  function saveReceiveSettings(settings) {
+    const clean = sanitizeReceiveSettings(settings);
+    try {
+      localStorage.setItem(RECEIVE_SETTINGS_KEY, JSON.stringify(clean));
+    } catch (_) {}
+    applyReceiveSettings(clean);
+    return clean;
+  }
+
+  let MAX_SEEN_IDS;
+  let MAX_LIST_ITEMS;
+  let DEFAULT_RECEIVE_DAYS;
+  // false → Received tab stays visible but reading is disabled (no Start/Stop).
+  let RECEIVE_READING_ENABLED;
+  let RECEIVE_CHAT_GAP_MIN_SEC;
+  let RECEIVE_CHAT_GAP_MAX_SEC;
+  let RECEIVE_POLL_INTERVAL_MS;
+  let RECEIVE_OPEN_STUCK_MS;
+  let RECEIVE_UNREAD_REQUEUE_MS;
+  // Failed chat API posts are re-sent on this interval until they succeed.
+  let RECEIVE_POST_RETRY_MS;
+
+  function applyReceiveSettings(st) {
+    RECEIVE_READING_ENABLED = st.readingEnabled;
+    DEFAULT_RECEIVE_DAYS = st.receiveDays;
+    RECEIVE_CHAT_GAP_MIN_SEC = st.chatGapMinSec;
+    RECEIVE_CHAT_GAP_MAX_SEC = st.chatGapMaxSec;
+    RECEIVE_POLL_INTERVAL_MS = st.pollIntervalSec * 1000;
+    RECEIVE_OPEN_STUCK_MS = st.openStuckSec * 1000;
+    RECEIVE_UNREAD_REQUEUE_MS = st.unreadRequeueSec * 1000;
+    RECEIVE_POST_RETRY_MS = st.postRetrySec * 1000;
+    MAX_SEEN_IDS = st.maxSeenIds;
+    MAX_LIST_ITEMS = st.maxListItems;
+  }
+
+  applyReceiveSettings(loadReceiveSettings());
   const CHAT_MESSAGE_CURSOR_STORAGE_KEY = "wa_chat_message_cursor_v1";
   const CHAT_CURSOR_PERSIST_DEBOUNCE_MS = 1000;
 
   function getReceiveReadDays() {
-    // Locked to 1 day for now
-    return 1;
+    return DEFAULT_RECEIVE_DAYS;
   }
 
   function getReadCutoffMs(days) {
@@ -1386,6 +1460,8 @@
         .querySelector?.("[data-pre-plain-text]")
         ?.getAttribute("data-pre-plain-text") || "";
     let messageDate = getMessageTimestamp(withId);
+    // Real dates always respect the read window, even during unread catch-up.
+    if (messageDate && !isWithinReadWindow(messageDate)) return null;
 
     const messageId = (() => {
       const dataId = withId.getAttribute("data-id") || "";
@@ -1861,6 +1937,17 @@
     postedEl.classList.remove("error");
     postedEl.replaceChildren();
 
+    // Row dataset feeds the per-second progress line (see refreshPostProgress)
+    const li = postedEl.closest?.(".wa-received-item");
+    if (li) {
+      li.dataset.postState =
+        postState === "ok" || postState === "skip" ? "ok"
+        : !postState || postState === "pending" ? "pending"
+        : "error";
+      li.dataset.attempts = String(postState?.attempts || 0);
+      li.dataset.nextRetryAt = String(postState?.nextRetryAt || 0);
+    }
+
     if (postState === "ok") {
       postedEl.textContent = "Posted to chat API";
       postedEl.removeAttribute("title");
@@ -1872,7 +1959,7 @@
       return;
     }
     if (!postState || postState === "pending") {
-      postedEl.textContent = "Posting...";
+      postedEl.textContent = "Not posted yet";
       postedEl.removeAttribute("title");
       return;
     }
@@ -1921,6 +2008,7 @@
         existingSidebar.querySelector("#wa-not-available-url") &&
         existingSidebar.querySelector("#wa-receive-url") &&
         existingSidebar.querySelector('[data-tab="received"]') &&
+        existingSidebar.querySelector('[data-tab="settings"]') &&
         existingSidebar.querySelector(".wa-send-actions") &&
         existingSidebar.querySelector("#wa-stop-whatsapp-chat") &&
         typeof existingSidebar.querySelector === "function";
@@ -1954,6 +2042,7 @@
         <button type="button" class="wa-tab" data-tab="manual" style="display:none;" hidden>Manual</button>
         <button type="button" class="wa-tab active" data-tab="api">Start Sending Messages</button>
         <button type="button" class="wa-tab" data-tab="received">Received</button>
+        <button type="button" class="wa-tab" data-tab="settings">Settings</button>
         </div>
       <div class="wa-sidebar-content">
         <div class="wa-tab-panel" data-panel="manual" style="display:none;">
@@ -1993,6 +2082,20 @@
             <button id="wa-stop-listening" type="button" style="display:none; background:#e74c3c; color:white;">Stop Listening</button>
           </div>
           <ul id="wa-received-list" class="wa-received-list"></ul>
+        </div>
+        <div class="wa-tab-panel" data-panel="settings" style="display:none;">
+          <p class="wa-hint">Saved in this browser only. Changes apply right away (listening restarts if it is on).</p>
+          <form id="wa-settings-form" novalidate>
+            ${RECEIVE_SETTINGS_FIELDS.map((f) =>
+              f.type === "bool" ?
+                `<label class="wa-settings-check"><input type="checkbox" name="${f.key}" /> ${f.label}</label>`
+              : `<label for="wa-setting-${f.key}">${f.label}</label>
+                 <input type="number" id="wa-setting-${f.key}" name="${f.key}" min="${f.min}" max="${f.max}" step="1" />`,
+            ).join("")}
+            <div id="wa-settings-status" class="wa-send-status"></div>
+            <button type="submit" id="wa-settings-save">Save Settings</button>
+            <button type="button" id="wa-settings-reset" class="wa-settings-reset">Reset to defaults</button>
+          </form>
         </div>
         <div id="wa-send-controls">
           <div class="wa-api-urls-hidden" aria-hidden="true" style="display: flex; gap: 10px; margin-bottom: 10px;">
@@ -2092,10 +2195,9 @@
         for (const [k, v] of Object.entries(stored)) {
           const atMs = Number(v?.atMs);
           if (!Number.isFinite(atMs)) continue;
-          chatMessageCursorByChatName.set(k, {
-            atMs,
-            messageId: String(v?.messageId || ""),
-          });
+          const ids = Array.isArray(v?.ids) ? v.ids.map(String) : [];
+          if (!ids.length && v?.messageId) ids.push(String(v.messageId));
+          chatMessageCursorByChatName.set(k, { atMs, ids });
         }
       } catch (_) {}
     }
@@ -2108,7 +2210,7 @@
         const obj = {};
         for (const [k, v] of chatMessageCursorByChatName.entries()) {
           if (!v || !Number.isFinite(v.atMs)) continue;
-          obj[k] = { atMs: v.atMs, messageId: v.messageId || "" };
+          obj[k] = { atMs: v.atMs, ids: v.ids || [] };
         }
         await chrome.storage.local.set({
           [CHAT_MESSAGE_CURSOR_STORAGE_KEY]: obj,
@@ -2122,19 +2224,29 @@
         CHAT_CURSOR_PERSIST_DEBOUNCE_MS,
       );
     }
-    function getChatCursorAtMs(chatKey) {
-      return chatMessageCursorByChatName.get(chatKey)?.atMs;
+    // WhatsApp timestamps are minute-precision, so several messages can share
+    // the cursor's atMs. Only those whose ids were already captured are old.
+    function isBehindChatCursor(chatKey, atMs, messageId) {
+      const cursor = chatMessageCursorByChatName.get(chatKey);
+      if (!cursor || !Number.isFinite(cursor.atMs) || !Number.isFinite(atMs)) {
+        return false;
+      }
+      if (atMs < cursor.atMs) return true;
+      return atMs === cursor.atMs && cursor.ids.includes(String(messageId));
     }
     function updateChatCursor(chatKey, receivedAtIso, messageId) {
       if (!chatKey) return;
       const atMs = Date.parse(receivedAtIso);
       if (!Number.isFinite(atMs)) return;
+      const id = String(messageId || "");
       const prev = chatMessageCursorByChatName.get(chatKey);
-      if (prev && Number.isFinite(prev.atMs) && atMs <= prev.atMs) return;
-      chatMessageCursorByChatName.set(chatKey, {
-        atMs,
-        messageId: String(messageId || ""),
-      });
+      if (prev && Number.isFinite(prev.atMs) && atMs < prev.atMs) return;
+      if (prev && atMs === prev.atMs) {
+        if (!id || prev.ids.includes(id)) return;
+        prev.ids = [...prev.ids, id].slice(-50);
+      } else {
+        chatMessageCursorByChatName.set(chatKey, { atMs, ids: id ? [id] : [] });
+      }
       cursorDirty = true;
       schedulePersistChatMessageCursors();
     }
@@ -2345,6 +2457,10 @@
         : startBtn.dataset.labelManual || "Start Sending Messages";
     }
 
+    function isSendTab() {
+      return activeTab === "api" || activeTab === "manual";
+    }
+
     function updatePanelVisibility() {
       sidebar.querySelectorAll(".wa-tab").forEach((btn) => {
         btn.classList.toggle("active", btn.dataset.tab === activeTab);
@@ -2356,17 +2472,17 @@
       const sendControls = document.getElementById("wa-send-controls");
       if (sendControls) {
         sendControls.style.display =
-          activeTab === "received" ? "none" : "block";
+          isSendTab() ? "block" : "none";
       }
       const startBtn = document.getElementById("wa-start-whatsapp-chat");
       const stopBtn = document.getElementById("wa-stop-whatsapp-chat");
       const running = !!startBtn?.disabled;
       if (startBtn) {
         startBtn.style.display =
-          activeTab === "received" || running ? "none" : "";
+          !isSendTab() || running ? "none" : "";
       }
       if (stopBtn) {
-        const showStop = running && activeTab !== "received";
+        const showStop = running && isSendTab();
         stopBtn.hidden = !showStop;
         stopBtn.style.display = showStop ? "block" : "none";
       }
@@ -2395,11 +2511,11 @@
       startBtn.disabled = !!running;
       startBtn.setAttribute("aria-disabled", running ? "true" : "false");
       // Always show Stop while the sender loop is active (API + Manual).
-      const showStop = !!running && activeTab !== "received";
+      const showStop = !!running && isSendTab();
       stopBtn.hidden = !showStop;
       stopBtn.style.display = showStop ? "block" : "none";
       startBtn.style.display =
-        activeTab === "received" || running ? "none" : "";
+        !isSendTab() || running ? "none" : "";
       sidebar.querySelectorAll(".wa-tab").forEach((btn) => {
         btn.disabled = !!running;
       });
@@ -2528,6 +2644,10 @@
         </div>
         <div class="wa-received-text"></div>
         <div class="wa-received-posted"></div>
+        <div class="wa-post-progress" hidden>
+          <span class="wa-post-progress-text"></span>
+          <button type="button" class="wa-retry-now" hidden>Retry now</button>
+        </div>
       `;
       li.querySelector(".wa-received-text").textContent = payload.text;
 
@@ -2553,23 +2673,26 @@
       });
     }
 
-    function updateReceivedItemStatus(messageId, postState) {
-      const li = document.querySelector(
-        `#wa-received-list [data-message-id="${CSS.escape(messageId)}"]`,
-      );
-      if (!li) return;
-      const postedEl = li.querySelector(".wa-received-posted");
-      if (!postedEl) return;
-      renderReceivedPostState(postedEl, postState);
-
+    function updateReceivedItemStatus(messageId, postState, payload) {
+      // Persist first so retries see the latest state even if the row is gone
       const items = loadReceivedList();
       const idx = items.findIndex(
         (item) => item?.payload?.messageId === messageId,
       );
       if (idx >= 0) {
-        items[idx] = { ...items[idx], postState };
+        items[idx] = {
+          ...items[idx],
+          postState,
+          ...(payload ? { payload } : {}),
+        };
         saveReceivedList(items);
       }
+
+      const li = document.querySelector(
+        `#wa-received-list [data-message-id="${CSS.escape(messageId)}"]`,
+      );
+      const postedEl = li?.querySelector(".wa-received-posted");
+      if (postedEl) renderReceivedPostState(postedEl, postState);
     }
 
     function postIncomingToChatApi(payload) {
@@ -2656,15 +2779,10 @@
       if (seenIds.has(payload.messageId)) return;
 
       const chatKey = payload.chatName || payload.from || "unknown";
-      const cursorAtMs = getChatCursorAtMs(chatKey);
       const payloadAtMs = Date.parse(payload.receivedAt);
       // Persisted cursor check: avoid re-posting messages already captured
       // in a previous session (or earlier in this run).
-      if (
-        Number.isFinite(cursorAtMs) &&
-        Number.isFinite(payloadAtMs) &&
-        payloadAtMs <= cursorAtMs
-      ) {
+      if (isBehindChatCursor(chatKey, payloadAtMs, payload.messageId)) {
         return;
       }
       const now = Date.now();
@@ -2697,31 +2815,182 @@
         `New from ${payload.chatName || payload.from || "chat"}`,
       );
 
+      sendIncomingPost(payload, { resolvePhone: true });
+    }
+
+    const inFlightPostIds = new Set();
+    // Progress tracking for the Received list
+    const waitingPostIds = []; // queued behind the active post, in order
+    let activePostId = "";
+    let activePostStep = "";
+    // How often the retry scheduler checks for due items
+    const POST_RETRY_CHECK_MS = 5000;
+
+    function getStoredPostState(messageId) {
+      return loadReceivedList().find(
+        (item) => item?.payload?.messageId === messageId,
+      )?.postState;
+    }
+
+    function sendIncomingPost(payload, options = {}) {
+      const messageId = payload.messageId;
+      if (inFlightPostIds.has(messageId)) return;
+      inFlightPostIds.add(messageId);
+      waitingPostIds.push(messageId);
+      refreshPostProgress();
       postQueue = postQueue.then(async () => {
-        if (!isListening()) return;
+        const waitIdx = waitingPostIds.indexOf(messageId);
+        if (waitIdx >= 0) waitingPostIds.splice(waitIdx, 1);
         try {
-          // Resolve sender phone from Contact info (ignore weak/wrong cache)
+          // Manual "Retry now" (force) posts even while listening is stopped
+          if (!isListening() && !options.force) return;
+          activePostId = messageId;
+          activePostStep = "Sending to chat API…";
+          refreshPostProgress();
+          const chatKey = payload.chatName || payload.from || "unknown";
+          // Resolve sender phone from Contact info (ignore weak/wrong cache).
+          // Retries skip this unless the chat is open, so we never read the
+          // wrong contact's drawer.
           const existing = normalizePhone(payload.from);
           const existingScore =
             existing ? scorePhoneCandidate(existing, existing) : 0;
-          if (!existing || existingScore < 20) {
+          if (
+            (!existing || existingScore < 20) &&
+            (options.resolvePhone || isChatCurrentlyOpen(payload.chatName))
+          ) {
+            activePostStep = "Finding sender phone number…";
+            refreshPostProgress();
             const resolved = await ensurePeerPhone(
               payload.chatName,
               payload.prePlainText,
             );
             if (resolved) payload.from = resolved;
+            activePostStep = "Sending to chat API…";
+            refreshPostProgress();
           }
           await postIncomingToChatApi(payload);
-          updateChatCursor(chatKey, payload.receivedAt, payload.messageId);
-          updateReceivedItemStatus(payload.messageId, "ok");
+          updateChatCursor(chatKey, payload.receivedAt, messageId);
+          updateReceivedItemStatus(messageId, "ok");
         } catch (err) {
+          const prevAttempts =
+            Number(getStoredPostState(messageId)?.attempts) || 0;
           updateReceivedItemStatus(
-            payload.messageId,
-            err.postState || { error: err.message || "Request failed" },
+            messageId,
+            {
+              ...(err.postState || { error: err.message || "Request failed" }),
+              attempts: prevAttempts + 1,
+              nextRetryAt: Date.now() + RECEIVE_POST_RETRY_MS,
+            },
+            payload,
           );
+        } finally {
+          inFlightPostIds.delete(messageId);
+          if (activePostId === messageId) {
+            activePostId = "";
+            activePostStep = "";
+          }
+          refreshPostProgress();
         }
       });
     }
+
+    function formatWait(ms) {
+      const sec = Math.max(0, Math.ceil(ms / 1000));
+      return sec >= 60 ? `${Math.floor(sec / 60)}m ${sec % 60}s` : `${sec}s`;
+    }
+
+    // Per-row progress line: waiting / sending / next retry / paused
+    function refreshPostProgress() {
+      const list = document.getElementById("wa-received-list");
+      if (!list) return;
+      const now = Date.now();
+      const listening = isListening();
+      list.querySelectorAll(".wa-received-item").forEach((li) => {
+        const id = li.dataset.messageId;
+        const wrap = li.querySelector(".wa-post-progress");
+        const textEl = li.querySelector(".wa-post-progress-text");
+        const btn = li.querySelector(".wa-retry-now");
+        if (!wrap || !textEl || !btn) return;
+        const state = li.dataset.postState;
+        const attempts = Number(li.dataset.attempts) || 0;
+        const nextAt = Number(li.dataset.nextRetryAt) || 0;
+        let text = "";
+        let canRetry = false;
+
+        if (state === "ok") {
+          text = "";
+        } else if (id === activePostId) {
+          text =
+            attempts ?
+              `${activePostStep} (attempt ${attempts + 1})`
+            : activePostStep;
+        } else if (waitingPostIds.includes(id)) {
+          const ahead = waitingPostIds.indexOf(id) + (activePostId ? 1 : 0);
+          text =
+            ahead > 0 ? `Waiting to send — ${ahead} ahead` : "Waiting to send…";
+        } else if (!listening) {
+          text =
+            state === "error" ?
+              `Failed ${attempts}x — retry paused (listening stopped)`
+            : "Waiting to send — paused (listening stopped)";
+          canRetry = true;
+        } else if (state === "error") {
+          text =
+            nextAt > now ?
+              `Failed ${attempts}x — next retry in ${formatWait(nextAt - now)}`
+            : `Failed ${attempts}x — retrying shortly…`;
+          canRetry = true;
+        } else {
+          text = "Waiting to send…";
+          canRetry = true;
+        }
+
+        if (textEl.textContent !== text) textEl.textContent = text;
+        wrap.hidden = !text;
+        btn.hidden = !canRetry;
+      });
+    }
+
+    // Re-send every received item not yet posted (failed, or left pending by
+    // a stop/reload). Runs while listening; stops once each post succeeds.
+    function retryUnpostedReceivedItems() {
+      if (!isListening()) return;
+      const now = Date.now();
+      loadReceivedList().forEach((item) => {
+        const payload = item?.payload;
+        if (!payload?.messageId) return;
+        if (item.postState === "ok" || item.postState === "skip") return;
+        if (Number(item.postState?.nextRetryAt) > now) return;
+        sendIncomingPost({ ...payload });
+      });
+    }
+
+    function startPostRetryTimer() {
+      if (window.__waPostRetryTimer) clearInterval(window.__waPostRetryTimer);
+      window.__waPostRetryTimer = setInterval(
+        retryUnpostedReceivedItems,
+        POST_RETRY_CHECK_MS,
+      );
+      if (window.__waPostProgressTimer) {
+        clearInterval(window.__waPostProgressTimer);
+      }
+      window.__waPostProgressTimer = setInterval(refreshPostProgress, 1000);
+    }
+    startPostRetryTimer();
+
+    document
+      .getElementById("wa-received-list")
+      ?.addEventListener("click", (e) => {
+        const btn = e.target.closest?.(".wa-retry-now");
+        if (!btn) return;
+        const id = btn.closest(".wa-received-item")?.dataset.messageId;
+        const item = loadReceivedList().find(
+          (it) => it?.payload?.messageId === id,
+        );
+        if (item?.payload) {
+          sendIncomingPost({ ...item.payload }, { force: true });
+        }
+      });
 
     function getScanOptions(extra = {}) {
       return {
@@ -3025,6 +3294,24 @@
       return true;
     }
 
+    // Last message is ours when the preview shows sent/delivered/read ticks
+    // or the pending clock (1:1 chats have no "You:" prefix).
+    function isOutgoingChatRow(cell) {
+      if (!cell) return false;
+      const secondary =
+        cell.querySelector('[data-testid="cell-frame-secondary"]') || cell;
+      if (
+        secondary.querySelector(
+          '[data-icon*="check"], [data-icon*="status-time"], [data-icon^="ic-done"], [data-icon="ic-access-time"], [data-testid*="dblcheck"], [data-testid="msg-check"], [data-testid="msg-time-status"]',
+        )
+      ) {
+        return true;
+      }
+      return /ic-(done|done-all|check|access-time)/.test(
+        secondary.textContent || "",
+      );
+    }
+
     function isOutgoingChatPreview(preview) {
       return /^(you|me|yo|tú|vous|você)\s*:/i.test(
         String(preview || "").trim(),
@@ -3048,6 +3335,13 @@
 
         const preview = getPreviewFromRow(cell);
         const unread = getUnreadCountFromCell(cell);
+        // Row first seen now (virtualized list scrolled into view): remember
+        // it instead of treating its old preview as new activity.
+        if (!chatListState.has(title) && unread < 1) {
+          markChatActivityHandled(title, preview, 0);
+          return;
+        }
+        const outgoing = isOutgoingChatPreview(preview) || isOutgoingChatRow(cell);
         const prev = chatListState.get(title) || {
           preview: "",
           unread: 0,
@@ -3062,13 +3356,13 @@
           !textsAreSameMessage(prev.preview, preview);
         const previewNotHandled =
           !!preview &&
-          !isOutgoingChatPreview(preview) &&
+          !outgoing &&
           (!prev.handledPreview ||
             !textsAreSameMessage(prev.handledPreview, preview));
         const syncedPreview =
           (previewChanged || (unread > 0 && previewNotHandled)) &&
           !!preview &&
-          !isOutgoingChatPreview(preview);
+          !outgoing;
         const hasNewActivity =
           unreadIncreased ||
           (unread > 0 && previewChanged) ||
@@ -3089,7 +3383,9 @@
 
         if (
           !hasNewActivity ||
-          !isChatRowWithinReadWindow(cell, Math.max(unread, 1))
+          // Pass the real unread count: preview-only activity must also be
+          // within the read window (unread chats are always eligible).
+          !isChatRowWithinReadWindow(cell, unread)
         ) {
           noteChatActivitySeen(title, preview, unread, prev.pending);
           return;
@@ -3200,6 +3496,108 @@
       return isConversationOpen();
     }
 
+    // WA only sends read receipts when it believes the user is active (recent
+    // mouse/scroll input on a focused window). When idle, the badge stays until
+    // the real mouse moves — so fake that activity inside the open chat.
+    function nudgeUserActivity() {
+      const main = document.querySelector("#main");
+      if (!main) return;
+      const rect = main.getBoundingClientRect();
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height / 2;
+      const common = {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: x,
+        clientY: y,
+        screenX: x,
+        screenY: y,
+      };
+      try {
+        window.dispatchEvent(new FocusEvent("focus"));
+        document.dispatchEvent(new Event("visibilitychange"));
+      } catch (_) {}
+      [window, document, main].forEach((t) => {
+        try {
+          t.dispatchEvent(
+            new PointerEvent("pointermove", { ...common, pointerType: "mouse" }),
+          );
+        } catch (_) {}
+        try {
+          t.dispatchEvent(new MouseEvent("mousemove", common));
+        } catch (_) {}
+      });
+      // Scroll the message pane to the bottom (WA marks read on scroll-to-end)
+      const scroller = [...main.querySelectorAll("div")].find((el) => {
+        if (el.scrollHeight <= el.clientHeight + 20) return false;
+        const oy = getComputedStyle(el).overflowY;
+        return oy === "auto" || oy === "scroll";
+      });
+      if (scroller) {
+        scroller.scrollTop = scroller.scrollHeight;
+        scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+      }
+    }
+
+    async function markChatReadViaMenu(title) {
+      const cell = findChatRowByTitle(title);
+      if (!cell) return false;
+      simulateHover(cell);
+      await sleep(250);
+      const chevron =
+        cell.querySelector('[data-icon*="down"]')?.closest("button, [role='button'], span") ||
+        cell.querySelector('[data-icon*="expand"]')?.closest("button, [role='button'], span") ||
+        cell.querySelector('button[aria-label*="menu" i], [aria-label*="open chat context menu" i]');
+      if (!chevron) return false;
+      simulateUserClick(chevron);
+      await sleep(400);
+      const item = [
+        ...document.querySelectorAll('[role="application"] li, [role="menuitem"], li[data-animate-dropdown-item]'),
+      ].find((el) => /^mark as read$/i.test((el.textContent || "").trim()));
+      if (!item) {
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        return false;
+      }
+      simulateUserClick(item);
+      await sleep(300);
+      return true;
+    }
+
+    function simulateHover(el) {
+      const r = el.getBoundingClientRect();
+      const common = {
+        bubbles: true,
+        view: window,
+        clientX: r.left + r.width / 2,
+        clientY: r.top + r.height / 2,
+      };
+      ["pointerover", "pointerenter", "mouseover", "mouseenter", "mousemove"].forEach(
+        (type) => {
+          try {
+            el.dispatchEvent(
+              type.startsWith("pointer") ?
+                new PointerEvent(type, { ...common, pointerType: "mouse" })
+              : new MouseEvent(type, common),
+            );
+          } catch (_) {}
+        },
+      );
+    }
+
+    /** After capturing, make sure WA actually clears the unread badge. */
+    async function ensureChatMarkedRead(title) {
+      for (let i = 0; i < 3; i++) {
+        nudgeUserActivity();
+        await sleep(600);
+        const cell = findChatRowByTitle(title);
+        if (!cell || getUnreadCountFromCell(cell) < 1) return true;
+      }
+      const ok = await markChatReadViaMenu(title);
+      if (ok) console.log("[WA] marked read via menu →", title);
+      return ok;
+    }
+
     async function openChatRow(row, title, options = {}) {
       if (!isListening() || !row) return;
 
@@ -3303,6 +3701,14 @@
         }
 
         seedVisibleConversationBaseline(baselineMessageIds);
+        // Only force read once we've actually captured — otherwise the badge
+        // is our retry signal and clearing it could lose messages.
+        if (captured > 0) {
+          try {
+            await ensureChatMarkedRead(title);
+          } catch (_) {}
+          if (!isListening()) return;
+        }
         const liveCell = findChatRowByTitle(title);
         const liveUnread = liveCell ? getUnreadCountFromCell(liveCell) : 0;
         const livePreview =
@@ -4212,6 +4618,82 @@
         setRunning(false);
       }
     }
+
+    const settingsForm = document.getElementById("wa-settings-form");
+    const settingsStatus = document.getElementById("wa-settings-status");
+
+    function fillSettingsForm(st) {
+      RECEIVE_SETTINGS_FIELDS.forEach((f) => {
+        const input = settingsForm.elements[f.key];
+        if (!input) return;
+        if (f.type === "bool") input.checked = !!st[f.key];
+        else input.value = String(st[f.key]);
+      });
+    }
+
+    function readSettingsForm() {
+      const out = {};
+      RECEIVE_SETTINGS_FIELDS.forEach((f) => {
+        const input = settingsForm.elements[f.key];
+        if (!input) return;
+        out[f.key] = f.type === "bool" ? input.checked : input.value;
+      });
+      return out;
+    }
+
+    function setApiListeningRowVisible(visible) {
+      const row = document
+        .getElementById("wa-api-listening-status")
+        ?.closest(".wa-receive-controls");
+      if (row) row.style.display = visible ? "flex" : "none";
+    }
+
+    // Re-apply timers/UI that captured the old values
+    function onReceiveSettingsChanged() {
+      startPostRetryTimer();
+      setApiListeningRowVisible(RECEIVE_READING_ENABLED);
+      if (!RECEIVE_READING_ENABLED) {
+        if (isListening()) stopReceiveListening();
+        setListeningUi(false);
+        setReceiveStatus(RECEIVE_DISABLED_STATUS);
+        return;
+      }
+      if (isListening()) {
+        ensureReceiveListening({ forceRestart: true });
+      } else {
+        setListeningUi(false);
+        setReceiveStatus("Stopped listening.");
+      }
+    }
+
+    function showSettingsStatus(text) {
+      settingsStatus.textContent = text;
+    }
+
+    fillSettingsForm(loadReceiveSettings());
+
+    settingsForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const wanted = readSettingsForm();
+      const saved = saveReceiveSettings(wanted);
+      fillSettingsForm(saved);
+      const adjusted = RECEIVE_SETTINGS_FIELDS.some(
+        (f) => f.type !== "bool" && Number(wanted[f.key]) !== saved[f.key],
+      );
+      onReceiveSettingsChanged();
+      showSettingsStatus(
+        adjusted ? "Saved (some values adjusted to allowed range)." : "Saved.",
+      );
+    });
+
+    document
+      .getElementById("wa-settings-reset")
+      .addEventListener("click", () => {
+        const saved = saveReceiveSettings(defaultReceiveSettings());
+        fillSettingsForm(saved);
+        onReceiveSettingsChanged();
+        showSettingsStatus("Defaults restored.");
+      });
 
     applyPosAuthToSidebar(sidebar);
 

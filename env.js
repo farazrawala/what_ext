@@ -1,22 +1,18 @@
 /**
- * Local environment — POS / API on localhost:8000
+ * Live environment — AI POS on testv3
+ * SPA: https://testv3.websitedemolynk.com/pos/
+ * API: https://testv3.websitedemolynk.com/pos_admin/api/chat/...
  */
 var WA_ENV = {
-  name: "local",
-  label: "Local",
-  posOrigin: "http://localhost:8000",
-  posUrl: "http://localhost:8000/",
+  name: "live",
+  label: "Live",
+  posOrigin: "https://testv3.websitedemolynk.com",
+  posUrl: "https://testv3.websitedemolynk.com/pos/",
   /** Chat API path under posOrigin (no trailing slash). */
-  chatApiPath: "/api/chat",
-  preferredHosts: [
-    "http://localhost:8000",
-    "http://127.0.0.1:8000",
-  ],
+  chatApiPath: "/pos_admin/api/chat",
+  preferredHosts: ["https://testv3.websitedemolynk.com"],
   /** chrome.tabs / content_scripts match patterns for POS pages. */
-  posTabMatch: [
-    "http://localhost:8000/*",
-    "http://127.0.0.1:8000/*",
-  ],
+  posTabMatch: ["https://testv3.websitedemolynk.com/*"],
 };
 
 (function bindWaEnv(global) {

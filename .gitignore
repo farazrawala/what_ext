@@ -1,3 +1,28 @@
+# Dependencies
 node_modules/
 package-lock.json
+
+# Build output (npm run build:*)
 build/
+*.zip
+*.crx
+*.pem
+
+# Environment / secrets
+.env
+.env.*
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor / IDE
+.cursor/
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1256,11 +1256,27 @@
           '[data-icon="status-dblcheck"]',
           '[data-icon="msg-check-light"]',
           '[data-icon="msg-dblcheck-light"]',
+          // Newer WA icon names
+          '[data-icon^="ic-done"]',
+          '[data-icon="ic-access-time"]',
+          '[data-icon*="dblcheck"]',
+          '[data-testid*="dblcheck"]',
+          '[data-testid="msg-check"]',
+          '[data-testid="msg-time-status"]',
         ].join(", "),
       )
     ) {
       return true;
     }
+
+    // Tick status labels (" Read ", " Delivered ", ...) only exist on own bubbles
+    const statusLabel = [...(row.querySelectorAll?.("[aria-label]") || [])].some(
+      (el) =>
+        /^(read|delivered|sent|pending)$/i.test(
+          (el.getAttribute("aria-label") || "").trim(),
+        ),
+    );
+    if (statusLabel) return true;
 
     const meta = row.querySelector?.('[data-testid="msg-meta"]');
     if (meta) {
@@ -1278,8 +1294,10 @@
       const m = main.getBoundingClientRect();
       const b = bubble.getBoundingClientRect();
       if (b.width > 20 && m.width > 0) {
-        const mid = m.left + m.width * 0.55;
-        if (b.left >= mid) return true;
+        // Incoming bubbles hug the left edge (~5% in). Outgoing ones are
+        // right-aligned, so even long ones start well away from the left —
+        // and the sidebar overlays #main, so the right edge can't be used.
+        if (b.left - m.left > m.width * 0.25) return true;
       }
     }
 
@@ -2489,14 +2507,9 @@
       updateStartButtonLabel();
     }
 
-    function tabsLocked() {
-      const startBtn = document.getElementById("wa-start-whatsapp-chat");
-      return !!startBtn?.disabled;
-    }
-
+    // Tabs stay usable while sending — the send loop doesn't depend on them.
     sidebar.querySelectorAll(".wa-tab").forEach((tabBtn) => {
       tabBtn.addEventListener("click", () => {
-        if (tabsLocked()) return;
         activeTab = tabBtn.dataset.tab;
         updatePanelVisibility();
       });
@@ -2516,9 +2529,6 @@
       stopBtn.style.display = showStop ? "block" : "none";
       startBtn.style.display =
         !isSendTab() || running ? "none" : "";
-      sidebar.querySelectorAll(".wa-tab").forEach((btn) => {
-        btn.disabled = !!running;
-      });
       if (!running) {
         updateStartButtonLabel();
       }

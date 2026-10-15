@@ -2051,7 +2051,7 @@
     sidebar.innerHTML = `
       <div class="wa-sidebar-header">
         <div class="wa-sidebar-title">
-          <span>Store Sync WhatsApp Sender</span>
+          <span>Store Sync POS Messenger</span>
           <span class="wa-version" id="wa-ext-version">v${currentVersion}</span>
         </div>
         <button id="wa-sidebar-close">&times;</button>

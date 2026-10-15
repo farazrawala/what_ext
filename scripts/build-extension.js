@@ -1,6 +1,8 @@
 /**
  * Pack a shareable Chrome extension folder under build/
- * Obfuscates/minifies every package file (JS + CSS + HTML + manifest).
+ * Minifies every package file (JS + CSS + HTML + manifest). Local builds also
+ * obfuscate JS; live builds do not, because the Chrome Web Store rejects
+ * obfuscated code.
  *
  * Usage:
  *   npm run build:local   → build/...-v{version}-local/
@@ -27,7 +29,7 @@ const JavaScriptObfuscator = require("javascript-obfuscator");
 const ROOT = path.resolve(__dirname, "..");
 const BUILD_ROOT = path.join(ROOT, "build");
 
-/** Minify + obfuscate with terser + javascript-obfuscator. */
+/** Minified with terser; also obfuscated in local builds only. */
 const JS_FILES = ["content.js", "background.js", "posAuth.js", "popup.js"];
 
 /** Minify only (no obfuscator) — POS auth bridge/inject must stay reliable. */
@@ -187,11 +189,11 @@ function obfuscateJs(code, filename) {
   return out;
 }
 
-async function buildJs(srcRel, destDir) {
+async function buildJs(srcRel, destDir, { obfuscate }) {
   const original = readRequired(srcRel);
   const minified = await minifyJs(original, srcRel);
-  const obfuscated = obfuscateJs(minified, srcRel);
-  writeBuilt(destDir, path.basename(srcRel), obfuscated, original);
+  const out = obfuscate ? obfuscateJs(minified, srcRel) : minified;
+  writeBuilt(destDir, path.basename(srcRel), out, original);
 }
 
 function minifyCss(css) {
@@ -230,17 +232,14 @@ async function buildMinifiedOnlyJs(code, filename, destDir) {
 function buildManifest(destDir, version, env) {
   const base = JSON.parse(readRequired("manifest.json"));
   base.version = version;
-  base.name =
-    env.name === "live" ?
-      "Store Sync WhatsApp Sender"
-    : "Store Sync WhatsApp Sender (Local)";
-  base.description =
-    env.name === "live" ?
-      `Live POS: ${env.posUrl}`
-    : `Local POS: ${env.posUrl}`;
+  if (env.name !== "live") {
+    base.name = `${base.name} (Local)`;
+    base.description = `Local development build. POS: ${env.posUrl}`;
+  }
 
-  // POS bridge only on this environment's hosts
+  // POS bridge and host access only on this environment's hosts
   const posMatches = Array.isArray(env.posTabMatch) ? env.posTabMatch : [];
+  base.host_permissions = ["https://web.whatsapp.com/*", ...posMatches];
   base.content_scripts = [
     {
       matches: ["https://web.whatsapp.com/*"],
@@ -260,7 +259,7 @@ function buildManifest(destDir, version, env) {
 }
 
 function writeInstallReadme(destDir, version, env) {
-  const text = `Store Sync WhatsApp Sender — v${version} (${env.label})
+  const text = `Store Sync POS Messenger — v${version} (${env.label})
 
 Environment
 - Name: ${env.name}
@@ -280,7 +279,7 @@ Install (Chrome / Edge)
 
 Notes
 - POS auth uses localStorage authToken (or cookies). Keep the POS tab open.
-- This package is minified/obfuscated (harder to read, not impossible to copy).
+- This package is ${env.name === "live" ? "minified only (no obfuscation, as the Chrome Web Store requires)" : "minified/obfuscated (harder to read, not impossible to copy)"}.
 - Local and Live builds are separate — do not mix them.
 
 Built from manifest version ${version}, env=${env.name}.
@@ -310,9 +309,14 @@ async function main() {
   console.log(`POS: ${env.posUrl}`);
   console.log(`API: ${env.posOrigin}${env.chatApiPath}`);
   console.log("");
-  console.log("JS (terser + javascript-obfuscator):");
+  const obfuscate = envName !== "live";
+  console.log(
+    obfuscate ?
+      "JS (terser + javascript-obfuscator):"
+    : "JS (terser minify only — no obfuscation for live/store builds):",
+  );
   for (const file of JS_FILES) {
-    await buildJs(file, destDir);
+    await buildJs(file, destDir, { obfuscate });
   }
 
   console.log("JS (minify only — env / POS bridge/inject):");
@@ -353,9 +357,11 @@ async function main() {
   console.log("");
   console.log("Share that folder (or zip it) with your friend.");
   console.log(`Example zip name: ${folderName}.zip`);
-  console.log(
-    "Note: obfuscation makes reading harder; it does not make code uncopyable.",
-  );
+  if (obfuscate) {
+    console.log(
+      "Note: obfuscation makes reading harder; it does not make code uncopyable.",
+    );
+  }
 }
 
 main().catch((err) => {

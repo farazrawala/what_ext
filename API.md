@@ -1,4 +1,4 @@
-# Store Sync WhatsApp Sender — API URLs
+# Store Sync POS Messenger — API URLs
 
 Base origin comes from the **active environment** (`env.js` / build `--env`).
 

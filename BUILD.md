@@ -37,16 +37,19 @@ Every package file is processed:
 | File | Treatment |
 |------|-----------|
 | `env.js` | Minified only (chosen env) |
-| `content.js` | Minified + obfuscated |
-| `background.js` | Minified + obfuscated |
-| `posAuth.js` | Minified + obfuscated |
-| `popup.js` | Minified + obfuscated |
+| `content.js` | Minified (+ obfuscated in local builds only) |
+| `background.js` | Minified (+ obfuscated in local builds only) |
+| `posAuth.js` | Minified (+ obfuscated in local builds only) |
+| `popup.js` | Minified (+ obfuscated in local builds only) |
 | `posBridge.js` | Minified only |
 | `posInject.js` | Minified only |
 | `sidebar.css` | Minified |
 | `popup.html` | Minified |
-| `manifest.json` | Minified JSON (POS `content_scripts` matches for that env) |
+| `manifest.json` | Minified JSON (POS `content_scripts` matches and `host_permissions` limited to WhatsApp Web + that env's POS host) |
 | `INSTALL.txt` | Env-specific install steps |
+
+Live builds are never obfuscated: the Chrome Web Store rejects obfuscated code.
+Privacy policy for the store listing: [privacy-policy.html](privacy-policy.html) (host it on the POS domain).
 
 ## Friend install (live example)
 

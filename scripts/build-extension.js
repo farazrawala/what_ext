@@ -36,6 +36,8 @@ const JS_FILES = ["content.js", "background.js", "posAuth.js", "popup.js"];
 const MINIFY_ONLY_JS = ["posBridge.js", "posInject.js", "env.js"];
 const CSS_FILES = ["sidebar.css"];
 const HTML_FILES = ["popup.html"];
+/** Copied as-is (manifest "icons" / action "default_icon"). */
+const ICON_DIR = "icons";
 
 function parseEnvArg() {
   const arg = process.argv.find((a) => a.startsWith("--env="));
@@ -335,6 +337,14 @@ async function main() {
   for (const file of HTML_FILES) {
     buildHtml(file, destDir);
   }
+
+  console.log("Icons (copied):");
+  fs.cpSync(path.join(ROOT, ICON_DIR), path.join(destDir, ICON_DIR), {
+    recursive: true,
+  });
+  fs.readdirSync(path.join(destDir, ICON_DIR)).forEach((f) =>
+    console.log(`  ${ICON_DIR}/${f}`),
+  );
 
   console.log("JSON (minified + env matches):");
   buildManifest(destDir, version, env);

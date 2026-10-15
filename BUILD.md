@@ -49,6 +49,9 @@ Every package file is processed:
 | `INSTALL.txt` | Env-specific install steps |
 
 Live builds are never obfuscated: the Chrome Web Store rejects obfuscated code.
+`localSocket.js` (dev `ws://localhost:3000` Start trigger) is packed only in local builds.
+Live builds also write `build/store-sync-whatsapp-sender-v{version}-live-store.zip`
+(manifest at the zip root, no `INSTALL.txt`) — upload that file to the Chrome Web Store.
 Privacy policy for the store listing: [privacy-policy.html](privacy-policy.html) (host it on the POS domain).
 
 ## Friend install (live example)

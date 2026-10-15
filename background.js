@@ -1,7 +1,10 @@
-let ws = null;
-let reconnectTimer = null;
-
 importScripts("env.js", "posAuth.js");
+
+// Dev-only WebSocket trigger (ws://localhost:3000). Live/store builds don't
+// ship localSocket.js and don't set localSocket, so this never loads there.
+if (self.WA_ENV && self.WA_ENV.localSocket) {
+  importScripts("localSocket.js");
+}
 
 async function attachPosAuthHeaders(url, headers) {
   const auth = await readPosAuth(url);
@@ -11,83 +14,6 @@ async function attachPosAuthHeaders(url, headers) {
   }
   return next;
 }
-
-function connectWebSocket() {
-  try {
-    if (typeof WebSocket === "undefined") {
-      console.warn("WebSocket is not available in this context");
-      return;
-    }
-
-    if (ws) {
-      try {
-        ws.onclose = null;
-        ws.onerror = null;
-        ws.close();
-      } catch (_) {}
-      ws = null;
-    }
-
-    ws = new WebSocket("ws://localhost:3000");
-
-    ws.onopen = () => {
-      console.log("WebSocket connection established");
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        console.log("Received from server:", data);
-
-        if (data && data.type === "start-sending") {
-          chrome.tabs.query({ url: "*://web.whatsapp.com/*" }, (tabs) => {
-            for (const tab of tabs) {
-              chrome.tabs
-                .sendMessage(tab.id, { type: "wa-start-sending" })
-                .catch(() => {
-                  chrome.scripting.executeScript({
-                    target: { tabId: tab.id },
-                    func: () => {
-                      window.postMessage(
-                        { type: "wa-start-sending-from-socket" },
-                        "*",
-                      );
-                    },
-                  });
-                });
-            }
-          });
-        }
-      } catch (e) {
-        console.error("WebSocket message error:", e);
-      }
-    };
-
-    ws.onclose = () => {
-      console.log("WebSocket closed, retrying in 3s...");
-      scheduleReconnect();
-    };
-
-    ws.onerror = () => {
-      if (ws) {
-        try {
-          ws.close();
-        } catch (_) {}
-      }
-    };
-  } catch (e) {
-    console.error("Failed to start WebSocket:", e);
-    scheduleReconnect();
-  }
-}
-
-function scheduleReconnect() {
-  if (reconnectTimer) clearTimeout(reconnectTimer);
-  reconnectTimer = setTimeout(connectWebSocket, 3000);
-}
-
-// Keep click/popup independent from socket connection
-setTimeout(connectWebSocket, 0);
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "wa-pos-auth-sync") {

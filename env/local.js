@@ -17,6 +17,8 @@ var WA_ENV = {
     "http://localhost:8000/*",
     "http://127.0.0.1:8000/*",
   ],
+  /** Load localSocket.js (ws://localhost:3000 Start trigger). Dev only. */
+  localSocket: true,
 };
 
 (function bindWaEnv(global) {

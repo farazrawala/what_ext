@@ -51,7 +51,9 @@ Store Sync POS Messenger is not affiliated with, endorsed by, or sponsored by Wh
 | Small promo tile | `promo-tile-440x280.png` | 440×280 |
 
 **Homepage URL:** https://testv3.websitedemolynk.com/pos/
-**Support URL:** `<support page or mailto: contact email>`
+**Support URL:** https://ordershub.pk (or a contact page there), support email info@ordershub.pk
+
+**Account tab:** publisher display name `OrdersHub`, contact email `info@ordershub.pk` (Google sends a verification link to it).
 
 ---
 

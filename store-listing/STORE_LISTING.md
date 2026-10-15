@@ -24,7 +24,8 @@ WHAT IT DOES
 • Sends queued messages: press Start and the extension sends the customer messages your Store Sync POS has queued, one at a time, from your own WhatsApp Web. Each message is marked "sent" or "not available" in your POS.
 • Saves customer replies: while listening is on, new incoming text messages are copied into your Store Sync POS so your team can follow up there. Messages you sent yourself are skipped.
 • Uses your POS sign-in: keep your Store Sync POS open and signed in; the extension uses that session, so there is nothing extra to log in to.
-• Adjustable pacing: set the gap between messages and how often replies are checked on the Settings tab.
+• Paced sending: messages go out one at a time with a short pause between each.
+• Reply settings: on the Settings tab, choose how often replies are checked and how far back to read, or turn reply reading off.
 
 HOW TO USE
 1. Sign in to your Store Sync POS in Chrome.

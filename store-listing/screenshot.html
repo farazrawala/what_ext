@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Store screenshot</title>
+<link rel="stylesheet" href="../sidebar.css">
+<style>
+  html { background: #bfe9d0; }
+  html, body { margin: 0; width: 1280px; height: 800px; overflow: hidden; }
+  body { position: relative;
+    font-family: "Segoe UI", system-ui, Arial, sans-serif;
+    background: linear-gradient(135deg, #e9f8ef 0%, #d3f1df 55%, #bfe9d0 100%);
+    color: #0b3d2e;
+  }
+  .pitch { position: absolute; left: 72px; top: 0; bottom: 0; width: 760px;
+           display: flex; flex-direction: column; justify-content: center; }
+  .brand { display: flex; align-items: center; gap: 16px; margin-bottom: 36px; }
+  .brand img { width: 64px; height: 64px; }
+  .brand span { font-size: 22px; font-weight: 600; color: #0f6b47; }
+  h1 { font-size: 46px; line-height: 1.15; margin: 0 0 22px; letter-spacing: -0.5px; }
+  .lead { font-size: 21px; line-height: 1.5; margin: 0 0 30px; color: #24584a; max-width: 640px; }
+  ul { list-style: none; padding: 0; margin: 0; }
+  li.point { font-size: 19px; line-height: 1.45; margin: 0 0 14px; padding-left: 38px; position: relative; color: #1d4d40; }
+  li.point::before { content: "✓"; position: absolute; left: 0; top: 0; width: 26px; height: 26px;
+     border-radius: 50%; background: #1fae5b; color: #fff; font-size: 15px; font-weight: 700;
+     display: flex; align-items: center; justify-content: center; }
+  .note { margin-top: 30px; font-size: 14px; color: #4f7a6c; }
+  /* Sidebar sits in a framed "browser window" area on the right */
+  #wa-cursor-sidebar { top: 60px !important; right: 48px !important; height: 680px !important;
+     border-radius: 12px; overflow: hidden; box-shadow: 0 18px 50px rgba(6, 60, 40, 0.28) !important; }
+</style>
+<script>
+  const params = new URLSearchParams(location.search);
+  const TAB = params.get("tab") || "api";
+  const now = Date.now();
+  const demo = [
+    { id: "m3", name: "Ayesha Khan", from: "923001234567", text: "Is the 12W LED panel available in warm white?", ago: 2, state: "ok" },
+    { id: "m2", name: "Bilal Ahmed", from: "923211112233", text: "Thanks, order received. When will it ship?", ago: 9, state: "ok" },
+    { id: "m1", name: "Sara Malik", from: "923334445566", text: "Please send the price list for downlights.", ago: 21, state: "ok" },
+  ];
+  sessionStorage.setItem("wa_received_list", JSON.stringify(demo.map(d => ({
+    payload: { messageId: d.id, chatName: d.name, from: "", text: d.text, receivedAt: new Date(now - d.ago * 60000).toISOString() },
+    postState: d.state,
+  }))));
+  // Minimal chrome.* stub: signed in to POS, empty send queue
+  const listeners = [];
+  window.chrome = {
+    runtime: {
+      lastError: undefined,
+      getManifest: () => ({ version: params.get("v") || "1.102" }),
+      onMessage: { addListener: f => listeners.push(f), removeListener: () => {} },
+      sendMessage(msg, cb) {
+        let res = { ok: true, data: { success: false } };
+        if (msg && msg.type === "wa-get-pos-auth") {
+          const base = "https://testv3.websitedemolynk.com/pos_admin/api/chat";
+          res = { authenticated: true, companyName: "Demo Store", companyId: "demo123",
+                  origin: "https://testv3.websitedemolynk.com",
+                  urls: { fetchUrl: base + "/fetch-random?company_id=demo123", updateUrl: base + "/mark-sent/:id",
+                          notAvailableUrl: base + "/mark-not-available/:id", receiveUrl: base + "/create/:token" },
+                  env: { name: "live", label: "Live", posUrl: "https://testv3.websitedemolynk.com/pos/" } };
+        }
+        if (typeof cb === "function") setTimeout(() => cb(res), 0);
+        return Promise.resolve(res);
+      },
+    },
+    storage: { local: { get: async () => ({}), set: async () => {} } },
+  };
+</script>
+</head>
+<body>
+  <div class="pitch">
+    <div class="brand"><img src="../icons/icon128.png" alt=""><span>Store Sync POS Messenger</span></div>
+    <h1 id="headline"></h1>
+    <p class="lead" id="lead"></p>
+    <ul id="points"></ul>
+    <p class="note">Works with your Store Sync POS account. Not affiliated with WhatsApp or Meta.</p>
+  </div>
+  <script>
+    const copy = {
+      api: {
+        h: "Send your POS's queued customer messages from WhatsApp Web",
+        lead: "Press Start and the extension sends each message your Store Sync POS has queued, one at a time, from your own WhatsApp Web.",
+        points: ["Signs in with your open Store Sync POS session", "Adjustable gap between messages", "Each message is marked sent or not available in your POS"],
+      },
+      received: {
+        h: "Customer replies are saved back to your POS",
+        lead: "While listening is on, new incoming messages are copied into your Store Sync POS so your team can follow up there.",
+        points: ["Captures text replies from customers", "Skips messages you sent yourself", "Retries automatically if the POS is unreachable"],
+      },
+    }[TAB];
+    document.getElementById("headline").textContent = copy.h;
+    document.getElementById("lead").textContent = copy.lead;
+    document.getElementById("points").innerHTML = copy.points.map(p => `<li class="point"></li>`).join("");
+    [...document.querySelectorAll("li.point")].forEach((li, i) => li.textContent = copy.points[i]);
+  </script>
+  <script src="../env/live.js"></script>
+  <script src="../content.js"></script>
+  <script>
+    setTimeout(() => {
+      if (TAB !== "api") document.querySelector(`.wa-tab[data-tab="${TAB}"]`)?.click();
+    }, 300);
+    // Show the normal "listening" state (this page has no WhatsApp chat list to watch)
+    setTimeout(() => {
+      for (const id of ["wa-receive-status", "wa-api-listening-status"]) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = id === "wa-api-listening-status" ? "Listening…" : "Listening for new messages…";
+      }
+      for (const id of ["wa-start-listening", "wa-api-start-listening"]) {
+        const el = document.getElementById(id); if (el) el.style.display = "none";
+      }
+      for (const id of ["wa-stop-listening", "wa-api-stop-listening"]) {
+        const el = document.getElementById(id); if (el) el.style.display = "inline-block";
+      }
+    }, 2500);
+  </script>
+</body>
+</html>

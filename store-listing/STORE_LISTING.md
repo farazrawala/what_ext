@@ -36,7 +36,7 @@ WHO IT IS FOR
 Businesses that use Store Sync POS and want to message their own customers from WhatsApp Web. A Store Sync POS account is required.
 
 PRIVACY
-Message data goes only to your Store Sync POS server. Nothing is sold, used for advertising, or shared with anyone else. The extension only runs on WhatsApp Web and your Store Sync POS site. Full policy: <PRIVACY POLICY URL>
+Message data goes only to your Store Sync POS server. Nothing is sold, used for advertising, or shared with anyone else. The extension only runs on WhatsApp Web and your Store Sync POS site. Full policy: https://testv3.websitedemolynk.com/pos/privacy-policy.html
 
 Store Sync POS Messenger is not affiliated with, endorsed by, or sponsored by WhatsApp or Meta. WhatsApp is a trademark of WhatsApp LLC.
 ```
@@ -110,7 +110,7 @@ testv3.websitedemolynk.com: this is the Store Sync POS. The extension reads the 
 - I do not use or transfer user data for purposes that are unrelated to my item's single purpose
 - I do not use or transfer user data to determine creditworthiness or for lending purposes
 
-**Privacy policy URL:** `<PRIVACY POLICY URL>` (host `../privacy-policy.html` publicly, e.g. https://testv3.websitedemolynk.com/privacy-policy.html)
+**Privacy policy URL:** https://testv3.websitedemolynk.com/pos/privacy-policy.html (served from `public/privacy-policy.html` in the ai-pos repo; keep it in sync with `../privacy-policy.html`)
 
 ---
 

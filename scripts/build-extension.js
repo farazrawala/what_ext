@@ -32,7 +32,7 @@ const ROOT = path.resolve(__dirname, "..");
 const BUILD_ROOT = path.join(ROOT, "build");
 
 /** Minified with terser; also obfuscated in local builds only. */
-const JS_FILES = ["content.js", "background.js", "posAuth.js", "popup.js"];
+const JS_FILES = ["content.js", "callTap.js", "background.js", "posAuth.js", "popup.js"];
 
 /** Dev-only scripts: packed in local builds, left out of live/store builds. */
 const LOCAL_ONLY_JS = ["localSocket.js"];
@@ -46,6 +46,8 @@ const CSS_FILES = ["sidebar.css"];
 const HTML_FILES = ["popup.html"];
 /** Copied as-is (manifest "icons" / action "default_icon"). */
 const ICON_DIR = "icons";
+/** Third-party libraries + their licenses, copied as-is (already minified). */
+const VENDOR_DIR = "vendor";
 
 function parseEnvArg() {
   const arg = process.argv.find((a) => a.startsWith("--env="));
@@ -325,6 +327,20 @@ function buildManifest(destDir, version, env) {
   base.host_permissions = ["https://web.whatsapp.com/*", ...posMatches];
   base.content_scripts = [
     {
+      // Page-world audio tap for call recording — must load before WhatsApp
+      matches: ["https://web.whatsapp.com/*"],
+      js: ["callTap.js"],
+      run_at: "document_start",
+      world: "MAIN",
+    },
+    {
+      // MP3 encoder for call recordings; only needed when saving
+      matches: ["https://web.whatsapp.com/*"],
+      js: ["vendor/lame.min.js"],
+      run_at: "document_idle",
+      world: "MAIN",
+    },
+    {
       matches: ["https://web.whatsapp.com/*"],
       js: ["env.js", "content.js"],
       css: ["sidebar.css"],
@@ -427,6 +443,14 @@ async function main() {
   });
   fs.readdirSync(path.join(destDir, ICON_DIR)).forEach((f) =>
     console.log(`  ${ICON_DIR}/${f}`),
+  );
+
+  console.log("Vendor (copied):");
+  fs.cpSync(path.join(ROOT, VENDOR_DIR), path.join(destDir, VENDOR_DIR), {
+    recursive: true,
+  });
+  fs.readdirSync(path.join(destDir, VENDOR_DIR)).forEach((f) =>
+    console.log(`  ${VENDOR_DIR}/${f}`),
   );
 
   console.log("JSON (minified + env matches):");

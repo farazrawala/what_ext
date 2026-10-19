@@ -2280,6 +2280,14 @@
             <button id="wa-start-whatsapp-chat" data-label-manual="Start Sending Messages" data-label-api="Start">Start Sending Messages</button>
             <button id="wa-stop-whatsapp-chat" class="wa-stop-btn" type="button" hidden>Stop</button>
           </div>
+          <div class="wa-call-box">
+            <div class="wa-call-chat">Open chat: <strong id="wa-call-chat">No chat open</strong></div>
+            <div class="wa-call-actions">
+              <button id="wa-call-btn" type="button">Voice call</button>
+              <button id="wa-record-btn" type="button">Record</button>
+            </div>
+            <div id="wa-call-status" class="wa-call-status">Record saves only the call's voices (you + them) as an .mp3 file.</div>
+          </div>
         </div>
       </div>
     `;
@@ -4756,6 +4764,163 @@
         if (status) status.textContent = "Stopped.";
       });
 
+    // ---- Voice call + call recording (Start Sending tab) ----
+    // The recording itself runs in callTap.js (page world): it takes only the
+    // call's voices — your mic and the other person — never the screen, and
+    // downloads an .mp3. Nothing is uploaded. Elements are looked up inside
+    // `sidebar` so an old injection never touches a rebuilt panel.
+    const CALL_REC_CMD_EVENT = "wa-ext:call-rec-cmd";
+    const CALL_REC_STATE_EVENT = "wa-ext:call-rec-state";
+    let callRec = { recording: false, startedAt: 0 };
+    let callTapReady = false; // false → page loaded before this extension version
+    let callUiTimer = null;
+    let callUiFrozen = false; // extension went stale — keep buttons disabled
+
+    function sendCallRecCommand(cmd, extra = {}) {
+      document.dispatchEvent(
+        new CustomEvent(CALL_REC_CMD_EVENT, {
+          detail: JSON.stringify({ cmd, ...extra }),
+        }),
+      );
+    }
+
+    function describeCallRecording(state) {
+      if (state.you && (state.them || state.webAudio)) {
+        return "Recording both voices…";
+      }
+      if (state.them) return "Recording their voice — your mic isn't on yet.";
+      if (state.you) return "Recording your voice — can't hear theirs yet.";
+      return "Recording — voices are picked up once the call connects.";
+    }
+
+    function onCallRecState(e) {
+      if (!sidebar.isConnected) {
+        document.removeEventListener(CALL_REC_STATE_EVENT, onCallRecState);
+        return;
+      }
+      let state;
+      try {
+        state = JSON.parse(e.detail);
+      } catch (_) {
+        return;
+      }
+      callTapReady = true;
+      callRec = state;
+      if (state.error) {
+        setCallStatus(state.error);
+      } else if (state.saved) {
+        setCallStatus(
+          `${state.saved.callEnded ? "Call ended — saved" : "Saved"} ${formatRecordingTime(state.saved.ms)} recording: ${state.saved.filename}`,
+        );
+      } else if (state.saving) {
+        setCallStatus("Saving recording…");
+      } else if (state.recording) {
+        setCallStatus(describeCallRecording(state));
+      }
+      renderCallUi();
+    }
+
+    function setCallStatus(text) {
+      const el = sidebar.querySelector("#wa-call-status");
+      if (el) el.textContent = text;
+    }
+
+    function formatRecordingTime(ms) {
+      const total = Math.max(0, Math.floor(ms / 1000));
+      const h = Math.floor(total / 3600);
+      const mm = String(Math.floor((total % 3600) / 60)).padStart(2, "0");
+      const ss = String(total % 60).padStart(2, "0");
+      return h ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+    }
+
+    function renderCallUi() {
+      if (!sidebar.isConnected) {
+        clearInterval(callUiTimer);
+        callUiTimer = null;
+        return;
+      }
+      const chatName = getOpenChatName();
+      const nameEl = sidebar.querySelector("#wa-call-chat");
+      if (nameEl) nameEl.textContent = chatName || "No chat open";
+      const callBtn = sidebar.querySelector("#wa-call-btn");
+      if (callBtn && !callUiFrozen) callBtn.disabled = !chatName;
+      const recBtn = sidebar.querySelector("#wa-record-btn");
+      if (recBtn) {
+        recBtn.classList.toggle("is-recording", callRec.recording);
+        recBtn.textContent =
+          callRec.recording ?
+            `Stop & save ${formatRecordingTime(Date.now() - callRec.startedAt)}`
+          : "Record";
+      }
+    }
+
+    // Icons first (not translated), then labels; video buttons are skipped.
+    function findVoiceCallButton() {
+      const header =
+        document.querySelector("#main header") ||
+        document.querySelector('[data-testid="conversation-header"]');
+      if (!header) return null;
+      const buttons = [...header.querySelectorAll('button, [role="button"]')];
+      const byIcon = buttons.find((el) => {
+        const icon = el.querySelector("[data-icon]")?.getAttribute("data-icon") || "";
+        return /call|phone/i.test(icon) && !/video/i.test(icon);
+      });
+      if (byIcon) return byIcon;
+      return (
+        buttons.find((el) => {
+          const label = `${el.getAttribute("aria-label") || ""} ${el.getAttribute("title") || ""}`;
+          return /voice call|audio call|\bcall\b/i.test(label) && !/video/i.test(label);
+        }) || null
+      );
+    }
+
+    async function startVoiceCall() {
+      const chatName = getOpenChatName();
+      if (!chatName) {
+        setCallStatus("Open a chat first.");
+        return;
+      }
+      const btn = findVoiceCallButton();
+      if (!btn) {
+        setCallStatus(
+          "No call button in this chat. WhatsApp Web calling may not be on for this account yet.",
+        );
+        return;
+      }
+      if (!simulateUserClick(btn)) btn.click();
+      // Some builds open a Voice / Video menu instead of calling straight away
+      await sleep(400);
+      const item = [
+        ...document.querySelectorAll('[role="menuitem"], [role="application"] li, li[data-animate-dropdown-item]'),
+      ].find((el) => /voice call|audio call/i.test(el.textContent || ""));
+      if (item && !simulateUserClick(item)) item.click();
+      setCallStatus(`Calling ${chatName}…`);
+    }
+
+    sidebar.querySelector("#wa-call-btn").addEventListener("click", () => {
+      startVoiceCall().catch((err) => {
+        setCallStatus(`Call failed: ${err.message || "unknown error"}`);
+      });
+    });
+    sidebar.querySelector("#wa-record-btn").addEventListener("click", () => {
+      if (callRec.recording) {
+        sendCallRecCommand("stop");
+        return;
+      }
+      if (!callTapReady) {
+        setCallStatus(
+          "Refresh WhatsApp Web once, then press Record (needed after installing or updating the extension).",
+        );
+        return;
+      }
+      sendCallRecCommand("start", { chatName: getOpenChatName() || "whatsapp" });
+    });
+    document.addEventListener(CALL_REC_STATE_EVENT, onCallRecState);
+    // Picks up a recording that is already running (e.g. panel rebuilt)
+    sendCallRecCommand("ping");
+    renderCallUi();
+    callUiTimer = setInterval(renderCallUi, 1000);
+
     document.getElementById("wa-sidebar-close").onclick = () => {
       sidebar.style.display = "none";
     };
@@ -4772,6 +4937,11 @@
       receiveCountdownTimer = null;
       chatOpenQueue.length = 0;
       clearChatOpenTimer();
+      // Buttons get disabled below — save a running recording now
+      if (callRec.recording) sendCallRecCommand("stop");
+      callUiFrozen = true;
+      clearInterval(callUiTimer);
+      callUiTimer = null;
       // A newer injection may already own the page — leave its sidebar alone
       if (document.getElementById("wa-cursor-sidebar") !== sidebar) return;
 

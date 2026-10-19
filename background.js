@@ -27,11 +27,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         token: auth.token,
         companyId: auth.companyId || "",
         companyName: auth.companyName || "",
-        origin: normalizeApiOrigin(auth.origin || PREFERRED_POS_HOSTS[0]),
+        origin: normalizeApiOrigin(auth.origin || preferredPosHosts()[0]),
         updatedAt: Date.now(),
       };
       try {
-        await chrome.storage.local.set({ wa_pos_auth_cache: payload });
+        await chrome.storage.local.set({
+          [posAuthCacheKey(payload.origin)]: payload,
+        });
         console.log("[WA] POS auth synced from page →", {
           origin: payload.origin,
           companyId: payload.companyId
@@ -48,6 +50,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "wa-post-incoming-chat") {
     (async () => {
+      await syncWaEnvOverride();
       const env = typeof getWaEnv === "function" ? getWaEnv() : null;
       const defaultOrigin = env?.posOrigin || "http://localhost:8000";
       const hintUrl =
@@ -126,6 +129,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "wa-get-pos-auth") {
     (async () => {
+      await syncWaEnvOverride();
       const env = typeof getWaEnv === "function" ? getWaEnv() : null;
       const defaultHint =
         env ?
@@ -163,6 +167,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   (async () => {
+    await syncWaEnvOverride();
     try {
       const headers = await attachPosAuthHeaders(url, {
         Accept: "application/json",

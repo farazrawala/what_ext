@@ -3,7 +3,13 @@ const POS_TOKEN_COOKIE = 'pos_auth_token';
 const POS_COMPANY_COOKIE = 'pos_company_id';
 const POS_COMPANY_NAME_COOKIE = 'pos_company_name';
 
-function getWaEnv() {
+/** chrome.storage key for the sidebar's Local/Live toggle (local builds only). */
+const WA_ENV_OVERRIDE_KEY = 'wa_env_override';
+/** Env name picked with the toggle; '' → the build's own env.js. */
+let waEnvOverride = '';
+
+/** Env as built (env.js), ignoring the sidebar toggle. */
+function getBaseWaEnv() {
   try {
     if (typeof WA_ENV !== 'undefined' && WA_ENV) return WA_ENV;
   } catch (_) {}
@@ -24,11 +30,28 @@ function getWaEnv() {
   };
 }
 
-/** Known POS hosts to probe for auth cookies (order = preference). */
-const PREFERRED_POS_HOSTS = getWaEnv().preferredHosts || [
-  'http://localhost:8000',
-  'http://127.0.0.1:8000',
-];
+/** Active env: env.js, or one of its alternates picked with the sidebar toggle. */
+function getWaEnv() {
+  const base = getBaseWaEnv();
+  return (waEnvOverride && base.alternates?.[waEnvOverride]) || base;
+}
+
+/** Re-read the toggle choice; call before getWaEnv() in each request handler. */
+async function syncWaEnvOverride() {
+  if (!getBaseWaEnv().alternates) return;
+  if (typeof chrome === 'undefined' || !chrome.storage?.local?.get) return;
+  try {
+    const data = await chrome.storage.local.get(WA_ENV_OVERRIDE_KEY);
+    waEnvOverride = String(data?.[WA_ENV_OVERRIDE_KEY] || '');
+  } catch (_) {}
+}
+
+/** Known POS hosts to probe for auth (order = preference) for the active env. */
+function preferredPosHosts() {
+  return (
+    getWaEnv().preferredHosts || ['http://localhost:8000', 'http://127.0.0.1:8000']
+  );
+}
 
 /** Paths to try when reading cookies for a host (Path=/pos cookies need /pos/). */
 const COOKIE_PATH_TRIES = ['/pos/', '/pos', '/'];
@@ -87,9 +110,7 @@ function resolveChatApiBase(origin) {
 function isPosTabUrl(url) {
   const raw = String(url || '');
   if (!raw) return false;
-  const env = getWaEnv();
-  const hosts = env.preferredHosts || PREFERRED_POS_HOSTS;
-  for (const host of hosts) {
+  for (const host of preferredPosHosts()) {
     try {
       const origin = normalizeApiOrigin(host);
       if (raw.startsWith(origin + '/') || raw === origin) return true;
@@ -208,6 +229,11 @@ async function readCookiesForHost(baseHostUrl) {
  */
 const POS_AUTH_STORAGE_KEY = 'wa_pos_auth_cache';
 
+/** One cache entry per POS origin, so local and live logins don't overwrite each other. */
+function posAuthCacheKey(origin) {
+  return `${POS_AUTH_STORAGE_KEY}:${normalizeApiOrigin(origin)}`;
+}
+
 /** Must stay self-contained — Chrome serializes this into the page; no outer refs. */
 function extractPosAuthFromPageStorageInline() {
   function pick() {
@@ -266,24 +292,30 @@ function extractPosAuthFromPageStorageInline() {
 
 async function readAuthFromStorageCache() {
   if (typeof chrome === 'undefined' || !chrome.storage?.local?.get) return null;
+  const hosts = preferredPosHosts().map(normalizeApiOrigin);
+  // The bare key is the single cache slot older versions wrote
+  const keys = [...hosts.map(posAuthCacheKey), POS_AUTH_STORAGE_KEY];
   try {
-    const data = await chrome.storage.local.get(POS_AUTH_STORAGE_KEY);
-    const auth = data?.[POS_AUTH_STORAGE_KEY];
-    if (!auth?.token) return null;
-    if (auth.updatedAt && Date.now() - Number(auth.updatedAt) > 86400000) {
-      return null;
+    const data = await chrome.storage.local.get(keys);
+    for (const key of keys) {
+      const auth = data?.[key];
+      if (!auth?.token) continue;
+      if (auth.updatedAt && Date.now() - Number(auth.updatedAt) > 86400000) {
+        continue;
+      }
+      const origin = normalizeApiOrigin(auth.origin || hosts[0]);
+      if (!hosts.includes(origin)) continue;
+      return {
+        token: auth.token,
+        companyId: auth.companyId || '',
+        companyName: auth.companyName || '',
+        origin,
+        authenticated: true,
+        source: 'storage',
+      };
     }
-    return {
-      token: auth.token,
-      companyId: auth.companyId || '',
-      companyName: auth.companyName || '',
-      origin: normalizeApiOrigin(auth.origin || PREFERRED_POS_HOSTS[0]),
-      authenticated: true,
-      source: 'storage',
-    };
-  } catch (_) {
-    return null;
-  }
+  } catch (_) {}
+  return null;
 }
 
 async function readAuthFromPosTabs() {
@@ -367,7 +399,7 @@ async function readPosAuth(apiUrl) {
     candidates.push(origin);
   };
 
-  PREFERRED_POS_HOSTS.forEach(pushHost);
+  preferredPosHosts().forEach(pushHost);
   try {
     pushHost(apiUrl);
   } catch (_) {}
@@ -615,6 +647,9 @@ if (typeof self !== 'undefined' && typeof window === 'undefined') {
   self.normalizeApiOrigin = normalizeApiOrigin;
   self.resolveChatApiBase = resolveChatApiBase;
   self.getWaEnv = getWaEnv;
+  self.syncWaEnvOverride = syncWaEnvOverride;
+  self.preferredPosHosts = preferredPosHosts;
+  self.posAuthCacheKey = posAuthCacheKey;
   self.isPosTabUrl = isPosTabUrl;
   self.POS_TOKEN_COOKIE = POS_TOKEN_COOKIE;
 }

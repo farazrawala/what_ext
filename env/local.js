@@ -8,14 +8,22 @@ var WA_ENV = {
   posUrl: "http://localhost:8000/",
   /** Chat API path under posOrigin (no trailing slash). */
   chatApiPath: "/api/chat",
+  /**
+   * :5173 is the ai-pos Vite dev server. Its chat API calls go through the dev
+   * server's /api proxy, so they reach whichever backend that POS is using.
+   */
   preferredHosts: [
     "http://localhost:8000",
     "http://127.0.0.1:8000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
   ],
   /** chrome.tabs / content_scripts match patterns for POS pages. */
   posTabMatch: [
     "http://localhost:8000/*",
     "http://127.0.0.1:8000/*",
+    "http://localhost:5173/*",
+    "http://127.0.0.1:5173/*",
   ],
   /** Load localSocket.js (ws://localhost:3000 Start trigger). Dev only. */
   localSocket: true,

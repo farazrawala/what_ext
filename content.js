@@ -6,6 +6,8 @@
   const LISTENING_STOPPED_KEY = "wa_listening_stopped";
   const RECEIVE_SETTINGS_KEY = "wa_receive_settings";
   const RECEIVE_DISABLED_STATUS = "Message reading is turned off.";
+  // Sidebar Local/Live API toggle choice — must match posAuth.js
+  const WA_ENV_OVERRIDE_KEY = "wa_env_override";
 
   // Tunables edited on the Settings tab (saved in localStorage). Times are
   // entered in seconds; applyReceiveSettings() converts them to ms.
@@ -108,15 +110,45 @@
     return d;
   }
 
+  // A misread day/month (10/11 read as 10 Nov) lands weeks ahead; real
+  // message times are never more than clock skew in the future.
+  const MAX_FUTURE_SKEW_MS = 24 * 60 * 60 * 1000;
+
+  function isFutureMessageTime(ms) {
+    return ms > Date.now() + MAX_FUTURE_SKEW_MS;
+  }
+
   function isWithinReadWindow(date, days) {
     if (!date || Number.isNaN(date.getTime())) return false;
-    return date.getTime() >= getReadCutoffMs(days);
+    const t = date.getTime();
+    return t >= getReadCutoffMs(days) && !isFutureMessageTime(t);
   }
 
   function parseDateParts(day, month, year) {
     if (!day || !month || !year) return null;
     const d = new Date(year, month - 1, day, 12, 0, 0, 0);
     return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  // Ambiguous dates (both parts ≤ 12) follow WhatsApp's locale: 10/11/2026 is
+  // 11 Oct in en-US but 10 Nov in en-GB. Learn the order from unambiguous
+  // dates (chat list, separators, messages); until then use the browser's.
+  let slashDayFirst = null;
+  let browserDayFirst = null;
+
+  function isBrowserLocaleDayFirst() {
+    if (browserDayFirst == null) {
+      try {
+        const order = new Intl.DateTimeFormat(navigator.language)
+          .formatToParts(new Date(2000, 11, 31))
+          .map((p) => p.type)
+          .filter((t) => t === "day" || t === "month");
+        browserDayFirst = order[0] !== "month";
+      } catch (_) {
+        browserDayFirst = true;
+      }
+    }
+    return browserDayFirst;
   }
 
   function parseSlashDate(datePart) {
@@ -128,19 +160,10 @@
     let b = parseInt(m[2], 10);
     let year = parseInt(m[3], 10);
     if (year < 100) year += 2000;
-    let day;
-    let month;
-    if (a > 12) {
-      day = a;
-      month = b;
-    } else if (b > 12) {
-      day = b;
-      month = a;
-    } else {
-      day = a;
-      month = b;
-    }
-    return parseDateParts(day, month, year);
+    if (a > 12) slashDayFirst = true;
+    else if (b > 12) slashDayFirst = false;
+    const dayFirst = slashDayFirst ?? isBrowserLocaleDayFirst();
+    return dayFirst ? parseDateParts(a, b, year) : parseDateParts(b, a, year);
   }
 
   function parseDateSeparatorText(text) {
@@ -470,6 +493,54 @@
 
   function isReceiveRunActive(runId) {
     return runId === window.__waReceiveActiveRun;
+  }
+
+  // Reloading or updating the extension orphans this script: the page keeps
+  // running it, but every chrome.* call throws "Extension context
+  // invalidated". Only a tab refresh loads the new copy.
+  const EXTENSION_STALE_STATUS = "Stopped — extension was updated.";
+  let extensionStale = false;
+  let onExtensionStale = null; // set by createSidebar for its own UI
+
+  function isExtensionContextValid() {
+    try {
+      return !!chrome.runtime?.id;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /** Returns true when orphaned; the first time, stops every loop and timer. */
+  function checkExtensionContext() {
+    if (extensionStale) return true;
+    if (isExtensionContextValid()) return false;
+    extensionStale = true;
+    console.warn("[WA] extension context invalidated — refresh WhatsApp Web");
+    // Sidebar first, while it can still tell whether it was sending/listening
+    try {
+      onExtensionStale?.();
+    } catch (err) {
+      console.warn("[WA] stale sidebar update failed →", err);
+    }
+    cancelAllSenderRuns();
+    cancelAllReceiveRuns();
+    [
+      "__waContextCheckTimer",
+      "__waListenWatchdog",
+      "__waPostRetryTimer",
+      "__waPostProgressTimer",
+    ].forEach((key) => {
+      if (window[key]) clearInterval(window[key]);
+      window[key] = null;
+    });
+    if (window.__waPosAuthVisibilityHandler) {
+      document.removeEventListener(
+        "visibilitychange",
+        window.__waPosAuthVisibilityHandler,
+      );
+      window.__waPosAuthVisibilityHandler = null;
+    }
+    return true;
   }
 
   function normalizePhone(number) {
@@ -821,6 +892,8 @@
   }
 
   function clearQueue() {
+    // Keep it when orphaned so refreshing the tab resumes sending
+    if (extensionStale) return;
     sessionStorage.removeItem(QUEUE_KEY);
   }
 
@@ -971,14 +1044,82 @@
     };
   }
 
-  function applyPosAuthToSidebar(sidebar) {
-    const statusEl = sidebar.querySelector("#wa-pos-auth-status");
-    if (!statusEl) return;
-
-    const env =
-      typeof WA_ENV !== "undefined" && WA_ENV ?
+  function getBaseWaEnv() {
+    return typeof WA_ENV !== "undefined" && WA_ENV ?
         WA_ENV
-      : { posOrigin: "http://localhost:8000", chatApiPath: "/api/chat" };
+      : {
+          name: "local",
+          label: "Local",
+          posOrigin: "http://localhost:8000",
+          chatApiPath: "/api/chat",
+        };
+  }
+
+  /** Envs the header toggle offers; empty (no toggle) unless env.js has alternates (local builds). */
+  function getSwitchableWaEnvs() {
+    const base = getBaseWaEnv();
+    const alternates = Object.values(base.alternates || {});
+    return alternates.length ? [base, ...alternates] : [];
+  }
+
+  async function loadActiveWaEnv() {
+    const envs = getSwitchableWaEnvs();
+    if (!envs.length) return getBaseWaEnv();
+    try {
+      const data = await chrome.storage.local.get(WA_ENV_OVERRIDE_KEY);
+      return envs.find((e) => e.name === data?.[WA_ENV_OVERRIDE_KEY]) || envs[0];
+    } catch (_) {
+      return envs[0];
+    }
+  }
+
+  function envToggleHtml() {
+    const envs = getSwitchableWaEnvs();
+    if (!envs.length) return "";
+    const buttons = envs
+      .map(
+        (e) =>
+          `<button type="button" data-env="${e.name}" aria-pressed="false" title="Use ${e.label} POS APIs (${e.posOrigin})">${e.label}</button>`,
+      )
+      .join("");
+    return `<div class="wa-env-toggle" id="wa-env-toggle" role="group" aria-label="POS API environment">${buttons}</div>`;
+  }
+
+  /** Switching env drops saved API URLs and rebuilds the sidebar against the new POS. */
+  function setupEnvToggle(sidebar) {
+    const group = sidebar.querySelector("#wa-env-toggle");
+    if (!group) return;
+    loadActiveWaEnv().then((env) => {
+      group.querySelectorAll("button[data-env]").forEach((btn) => {
+        btn.setAttribute("aria-pressed", String(btn.dataset.env === env.name));
+      });
+    });
+    group.addEventListener("click", async (event) => {
+      const btn = event.target.closest("button[data-env]");
+      if (!btn || btn.getAttribute("aria-pressed") === "true") return;
+      if (
+        loadQueue() &&
+        !confirm(`Stop sending and switch to ${btn.textContent} APIs?`)
+      ) {
+        return;
+      }
+      clearQueue();
+      localStorage.removeItem(API_SETTINGS_KEY);
+      try {
+        await chrome.storage.local.set({ [WA_ENV_OVERRIDE_KEY]: btn.dataset.env });
+      } catch (err) {
+        alert(`Could not switch API environment.\n\n${err.message || err}`);
+        return;
+      }
+      createSidebar(true);
+    });
+  }
+
+  async function applyPosAuthToSidebar(sidebar) {
+    const statusEl = sidebar.querySelector("#wa-pos-auth-status");
+    if (!statusEl || checkExtensionContext()) return;
+
+    const env = await loadActiveWaEnv();
     const defaultFetch = `${env.posOrigin}${env.chatApiPath || "/api/chat"}/fetch-random`;
     const apiSettings = loadApiSettings();
     const hintUrl =
@@ -989,13 +1130,14 @@
       (response) => {
         if (chrome.runtime.lastError) {
           statusEl.textContent = "POS auth: extension error";
-          statusEl.className = "wa-pos-auth-status is-error wa-api-urls-hidden";
+          statusEl.className = "wa-pos-auth-status is-error";
           return;
         }
 
         if (!response?.authenticated) {
           statusEl.textContent = "POS auth: keep AI POS tab open & logged in";
-          statusEl.className = "wa-pos-auth-status is-muted wa-api-urls-hidden";
+          statusEl.className = "wa-pos-auth-status is-muted";
+          statusEl.title = "";
           console.warn(
             "[WA] POS not authenticated — open live POS and log in",
             {
@@ -1011,7 +1153,9 @@
           : response.companyId ?
             `POS connected (company ${response.companyId.slice(0, 8)}…)`
           : "POS connected";
-        statusEl.className = "wa-pos-auth-status is-ok wa-api-urls-hidden";
+        statusEl.className = "wa-pos-auth-status is-ok";
+        // Hover shows which POS origin the login came from (localhost vs 127.0.0.1 vs live)
+        statusEl.title = response.origin || "";
         console.log("[WA] POS connected →", {
           origin: response.origin,
           companyId: response.companyId,
@@ -1144,6 +1288,10 @@
 
   function apiRequest(method, url, body) {
     return new Promise((resolve, reject) => {
+      if (checkExtensionContext()) {
+        reject(new Error(EXTENSION_STALE_STATUS));
+        return;
+      }
       chrome.runtime.sendMessage(
         { type: "wa-api-request", method, url, body },
         (response) => {
@@ -2054,6 +2202,7 @@
           <span>Store Sync POS Messenger</span>
           <span class="wa-version" id="wa-ext-version">v${currentVersion}</span>
         </div>
+        ${envToggleHtml()}
         <button id="wa-sidebar-close">&times;</button>
       </div>
         <div class="wa-tabs">
@@ -2070,7 +2219,7 @@
           <textarea id="wa-message-input" placeholder="Enter your message"></textarea>
         </div>
         <div class="wa-tab-panel" data-panel="api">
-          <div id="wa-pos-auth-status" class="wa-pos-auth-status is-muted wa-api-urls-hidden" aria-hidden="true">Checking POS login…</div>
+          <div id="wa-pos-auth-status" class="wa-pos-auth-status is-muted" role="status">Checking POS login…</div>
           <div class="wa-receive-controls" style="display:flex; gap:10px; margin-bottom:10px; align-items:center;">
             <div id="wa-api-listening-status" class="wa-send-status" style="margin:0; flex:1;">Listening…</div>
             <button id="wa-api-start-listening" type="button" style="display:none;">Start Listening</button>
@@ -2189,6 +2338,8 @@
     // Base text for the API listening strip (without countdown suffix).
     // Updated only when `setReceiveStatus()` runs.
     let lastApiListeningStatusText = "";
+    // Received-tab status without the "next chat in …s" suffix.
+    let lastReceiveStatusText = "";
     let receiveCountdownTimer = null;
     let nextReceivePollAt = 0;
 
@@ -2213,6 +2364,15 @@
         for (const [k, v] of Object.entries(stored)) {
           const atMs = Number(v?.atMs);
           if (!Number.isFinite(atMs)) continue;
+          // Saved from a misread date — it would hide every new message in
+          // this chat until that date. Drop it; the next persist removes it.
+          if (isFutureMessageTime(atMs)) {
+            console.warn("[WA] dropping future chat cursor →", {
+              chat: k,
+              at: new Date(atMs).toISOString(),
+            });
+            continue;
+          }
           const ids = Array.isArray(v?.ids) ? v.ids.map(String) : [];
           if (!ids.length && v?.messageId) ids.push(String(v.messageId));
           chatMessageCursorByChatName.set(k, { atMs, ids });
@@ -2255,7 +2415,7 @@
     function updateChatCursor(chatKey, receivedAtIso, messageId) {
       if (!chatKey) return;
       const atMs = Date.parse(receivedAtIso);
-      if (!Number.isFinite(atMs)) return;
+      if (!Number.isFinite(atMs) || isFutureMessageTime(atMs)) return;
       const id = String(messageId || "");
       const prev = chatMessageCursorByChatName.get(chatKey);
       if (prev && Number.isFinite(prev.atMs) && atMs < prev.atMs) return;
@@ -2290,12 +2450,14 @@
     }
     const openFailCounts = new Map();
     const chatListState = new Map(); // title -> { preview, unread }
-    const recentByChat = new Map(); // chatName -> [{ text, at, source }]
+    const recentByChat = new Map(); // chatName -> [{ messageId, text, at, source }]
     let chatListSeeded = false;
     const seenIds = loadSeenIds();
     let postQueue = Promise.resolve();
     let scanDebounceTimer = null;
-    let lastChatSwitchFinishedAt = 0;
+    // Earliest time the next queued chat may open (one gap per chat switch).
+    let nextChatOpenAt = 0;
+    let chatOpenTimer = null;
     const baselineMessageIds = new Set();
     let openingStartedAt = 0;
     let lastReceiveHeartbeatAt = 0;
@@ -2343,7 +2505,7 @@
       openingChat = false;
       openingChatTitle = "";
       openingStartedAt = 0;
-      lastChatSwitchFinishedAt = Date.now();
+      nextChatOpenAt = Date.now() + getChatSwitchGapMs();
       return true;
     }
 
@@ -2451,11 +2613,23 @@
       return getRandomDelay(RECEIVE_CHAT_GAP_MIN_SEC, RECEIVE_CHAT_GAP_MAX_SEC);
     }
 
-    function canOpenNextChat() {
-      if (openingChat || !isListening()) return false;
-      if (!lastChatSwitchFinishedAt) return true;
-      const minGapMs = RECEIVE_CHAT_GAP_MIN_SEC * 1000;
-      return Date.now() - lastChatSwitchFinishedAt >= minGapMs;
+    function clearChatOpenTimer() {
+      if (chatOpenTimer) clearTimeout(chatOpenTimer);
+      chatOpenTimer = null;
+    }
+
+    // " · next chat in 3s" while a queued chat is waiting out the gap.
+    function getNextChatCountdownSuffix() {
+      if (!chatOpenQueue.length || openingChat || !isListening()) return "";
+      const seconds = Math.ceil((nextChatOpenAt - Date.now()) / 1000);
+      return seconds > 0 ? ` · next chat in ${seconds}s` : "";
+    }
+
+    function renderReceiveStatusCountdown() {
+      const status = document.getElementById("wa-receive-status");
+      if (status) {
+        status.textContent = lastReceiveStatusText + getNextChatCountdownSuffix();
+      }
     }
 
     function isActive() {
@@ -2521,7 +2695,7 @@
       const startBtn = document.getElementById("wa-start-whatsapp-chat");
       const stopBtn = document.getElementById("wa-stop-whatsapp-chat");
       if (!startBtn || !stopBtn) return;
-      startBtn.disabled = !!running;
+      startBtn.disabled = !!running || extensionStale;
       startBtn.setAttribute("aria-disabled", running ? "true" : "false");
       // Always show Stop while the sender loop is active (API + Manual).
       const showStop = !!running && isSendTab();
@@ -2561,6 +2735,7 @@
       openingChat = false;
       openingChatTitle = "";
       chatOpenQueue.length = 0;
+      clearChatOpenTimer();
       setListeningUi(false);
       setReceiveStatus("Stopped listening.");
     }
@@ -2587,10 +2762,8 @@
         text.startsWith("Waiting for WhatsApp") ||
         text.startsWith("Listen failed:");
       if (!isListening() && !allowedWhileStopped) return;
-      const status = document.getElementById("wa-receive-status");
-      if (status) {
-        status.textContent = text;
-      }
+      lastReceiveStatusText = text;
+      renderReceiveStatusCountdown();
       const apiStatus = document.getElementById("wa-api-listening-status");
       if (apiStatus) {
         if (isListening()) {
@@ -2724,6 +2897,10 @@
         };
         console.log("[WA] POST /api/chat/create payload →", apiBody);
 
+        if (checkExtensionContext()) {
+          reject(new Error(EXTENSION_STALE_STATUS));
+          return;
+        }
         chrome.runtime.sendMessage(
           {
             type: "wa-post-incoming-chat",
@@ -2779,7 +2956,8 @@
       });
     }
 
-    async function handleIncomingPayload(payload) {
+    /** Returns true when the message is new and queued for the chat API. */
+    function handleIncomingPayload(payload) {
       if (!payload?.messageId || !payload?.text) return;
       // Never accept chat-list scrapes as message bodies (icons/unread bleed)
       if (payload.source === "chat-list") return;
@@ -2800,13 +2978,25 @@
         (item) => now - item.at < 90000,
       );
 
-      // Drop duplicates like conversation "Ass" + polluted "Ass1ic-expand-more"
-      if (recent.some((item) => textsAreSameMessage(item.text, payload.text))) {
+      // Drop duplicates like "Ass" + polluted "Ass1ic-expand-more", but only
+      // when one side has our dom_ fallback id (bubble read before WhatsApp
+      // gave it a data-id). Two real WhatsApp ids are two messages — customers
+      // repeat "Hi" or menu choices like "1".
+      const isFallbackId = (id) => String(id || "").startsWith("dom_");
+      if (
+        recent.some(
+          (item) =>
+            (isFallbackId(item.messageId) ||
+              isFallbackId(payload.messageId)) &&
+            textsAreSameMessage(item.text, payload.text),
+        )
+      ) {
         recentByChat.set(chatKey, recent);
         return;
       }
 
       recent.push({
+        messageId: payload.messageId,
         text: payload.text,
         at: now,
         source: payload.source || "unknown",
@@ -2826,6 +3016,7 @@
       );
 
       sendIncomingPost(payload, { resolvePhone: true });
+      return true;
     }
 
     const inFlightPostIds = new Set();
@@ -3098,7 +3289,10 @@
         if (ts && !isWithinReadWindow(ts)) baselineMessageIds.add(id);
       });
 
+      // captured = messages read off the page (drives retries/mark-read);
+      // accepted = ones that were actually new and queued for the API.
       let captured = 0;
+      let accepted = 0;
       toCapture.forEach((node) => {
         const payload = extractIncomingPayload(
           node,
@@ -3109,15 +3303,17 @@
           }),
         );
         if (payload) {
-          handleIncomingPayload(payload);
+          if (handleIncomingPayload(payload)) accepted += 1;
           captured += 1;
         }
       });
 
-      if (captured > 0) {
+      if (accepted > 0) {
         setReceiveStatus(
-          `Captured ${captured} synced message${captured === 1 ? "" : "s"}`,
+          `Captured ${accepted} new message${accepted === 1 ? "" : "s"}`,
         );
+      } else if (captured > 0) {
+        setReceiveStatus("No new messages — already captured.");
       }
       return captured;
     }
@@ -3405,11 +3601,12 @@
           unreadIncreased ? Math.max(1, unread - (prev.unread || 0)) : unread;
 
         if (isChatCurrentlyOpen(title)) {
-          // Only process open-chat catchup when the unread badge is actually present.
-          // If unread is 0, rely on cursor-based dedupe instead of re-reading scrollback.
-          if (unread < 1) return;
+          // WhatsApp marks messages in the open, focused chat read on arrival,
+          // so no badge appears — a new incoming preview is the only signal.
+          // With neither, don't re-read scrollback.
+          if (unread < 1 && !syncedPreview) return;
           const n = processConversationCatchup({
-            unreadHint: Math.max(newUnread, 1),
+            unreadHint: unread > 0 ? Math.max(newUnread, 1) : 0,
             expectedPreview: preview,
           });
           if (n > 0) {
@@ -3417,6 +3614,9 @@
             const st = chatListState.get(title) || {};
             st.lastCapturedAt = Date.now();
             chatListState.set(title, st);
+          } else if (unread < 1) {
+            // Preview message already captured — don't rescan it every poll
+            markChatActivityHandled(title, preview, 0);
           } else {
             noteChatActivitySeen(title, preview, unread, true);
           }
@@ -3473,7 +3673,20 @@
 
     async function processChatOpenQueue() {
       clearStuckOpenIfNeeded();
-      if (!canOpenNextChat() || !chatOpenQueue.length) return;
+      if (openingChat || !isListening() || !chatOpenQueue.length) return;
+      const waitMs = nextChatOpenAt - Date.now();
+      if (waitMs > 0) {
+        // Open right when the gap ends (not on the next poll tick) so the
+        // countdown reaches 0 when the chat actually opens.
+        if (!chatOpenTimer) {
+          chatOpenTimer = setTimeout(() => {
+            chatOpenTimer = null;
+            processChatOpenQueue();
+          }, waitMs);
+        }
+        renderReceiveStatusCountdown();
+        return;
+      }
       const item = chatOpenQueue.shift();
       // WhatsApp virtualizes the list — refresh the row from current DOM
       const liveRow = findChatRowByTitle(item.title) || item.row;
@@ -3740,19 +3953,17 @@
           );
         }
         if (isListening()) {
-          setReceiveStatus(
-            captured > 0 ?
-              `Captured ${captured} synced message${captured === 1 ? "" : "s"}`
-            : "Listening for new messages...",
-          );
-          await sleep(getChatSwitchGapMs());
+          // processConversationCatchup already reported what it captured
+          if (!captured) setReceiveStatus("Listening for new messages...");
         }
       } catch (err) {
         noteChatActivitySeen(title, expectedPreview, unreadCount, true);
         setReceiveStatus(`Read failed: ${err.message || "unknown error"}`);
         await sleep(800);
       } finally {
-        lastChatSwitchFinishedAt = Date.now();
+        // The gap runs here, after the chat is done, so the open-stuck timer
+        // no longer fires mid-gap; processChatOpenQueue waits it out.
+        nextChatOpenAt = Date.now() + getChatSwitchGapMs();
         openingChat = false;
         openingChatTitle = "";
         openingStartedAt = 0;
@@ -3915,6 +4126,7 @@
       nextReceivePollAt = Date.now() + RECEIVE_POLL_INTERVAL_MS;
       receiveCountdownTimer = setInterval(() => {
         if (!isListening()) return;
+        renderReceiveStatusCountdown();
         const apiStatusEl = document.getElementById("wa-api-listening-status");
         if (!apiStatusEl) return;
         const seconds = Math.max(
@@ -3948,7 +4160,8 @@
       baselineMessageIds.clear();
       chatListSeeded = false;
       chatOpenQueue.length = 0;
-      lastChatSwitchFinishedAt = 0;
+      clearChatOpenTimer();
+      nextChatOpenAt = 0;
       await loadChatMessageCursors();
       setListeningUi(true);
       setReceiveStatus("Listening for new messages...");
@@ -4547,6 +4760,51 @@
       sidebar.style.display = "none";
     };
 
+    setupEnvToggle(sidebar);
+
+    // Extension reloaded under this tab: freeze the panel and offer a refresh
+    onExtensionStale = () => {
+      const wasListening = isListening();
+      const wasSending = isActive();
+      stopSending = true;
+      stopListening = true;
+      if (receiveCountdownTimer) clearInterval(receiveCountdownTimer);
+      receiveCountdownTimer = null;
+      chatOpenQueue.length = 0;
+      clearChatOpenTimer();
+      // A newer injection may already own the page — leave its sidebar alone
+      if (document.getElementById("wa-cursor-sidebar") !== sidebar) return;
+
+      setRunning(false);
+      setListeningUi(false);
+      ["#wa-send-status", "#wa-receive-status", "#wa-api-listening-status"]
+        .map((sel) => sidebar.querySelector(sel))
+        .forEach((el) => {
+          if (el) el.textContent = EXTENSION_STALE_STATUS;
+        });
+      sidebar
+        .querySelectorAll(".wa-sidebar-content button, #wa-env-toggle button")
+        .forEach((btn) => {
+          btn.disabled = true;
+        });
+
+      const banner = document.createElement("div");
+      banner.className = "wa-stale-banner";
+      banner.setAttribute("role", "alert");
+      banner.textContent =
+        wasListening ?
+          "The extension was updated. Refresh this tab, then press Start Listening again."
+        : "The extension was updated. Refresh this tab to keep using it.";
+      const refreshBtn = document.createElement("button");
+      refreshBtn.type = "button";
+      refreshBtn.textContent = "Refresh tab";
+      refreshBtn.addEventListener("click", () => location.reload());
+      banner.append(refreshBtn);
+      sidebar.querySelector(".wa-sidebar-content")?.prepend(banner);
+      // Don't let a hidden panel hide that sending/listening stopped
+      if (wasListening || wasSending) sidebar.style.display = "flex";
+    };
+
     window.addEventListener("message", (event) => {
       if (event.data && event.data.type === "wa-start-sending-from-socket") {
         const startBtn = document.getElementById("wa-start-whatsapp-chat");
@@ -4707,6 +4965,24 @@
 
     applyPosAuthToSidebar(sidebar);
 
+    // Re-check POS login when returning from another tab (login, logout or account switch)
+    if (window.__waPosAuthVisibilityHandler) {
+      document.removeEventListener(
+        "visibilitychange",
+        window.__waPosAuthVisibilityHandler,
+      );
+    }
+    window.__waPosAuthVisibilityHandler = (event) => {
+      // The send loop dispatches synthetic visibilitychange events — ignore those
+      if (!event.isTrusted || document.hidden) return;
+      const current = document.getElementById("wa-cursor-sidebar");
+      if (current) applyPosAuthToSidebar(current).catch(() => {});
+    };
+    document.addEventListener(
+      "visibilitychange",
+      window.__waPosAuthVisibilityHandler,
+    );
+
     rehydrateReceivedList();
 
     lastNextListeningEstimate = estimateNextListeningMessagesFromChatList();
@@ -4771,6 +5047,10 @@
 
   // Always (re)build the sidebar on injection so extension reloads take effect
   createSidebar(true);
+
+  // Notice an extension reload even while idle (no API call there to fail)
+  if (window.__waContextCheckTimer) clearInterval(window.__waContextCheckTimer);
+  window.__waContextCheckTimer = setInterval(checkExtensionContext, 5000);
 
   // Replace any previous listener so re-injected scripts don't stack handlers
   if (window.__waSidebarOnMessage) {

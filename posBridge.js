@@ -72,14 +72,24 @@
 
   function syncAuth() {
     const auth = readAuthFromLocalStorage();
-    if (!auth.token) return;
+    if (!auth.token) {
+      // Logged out — drop this origin's cached login so the extension stops using it.
+      // The bare key is the pre-1.103 single slot, which posAuth.js still reads.
+      try {
+        chrome.storage.local.remove([`${STORAGE_KEY}:${location.origin}`, STORAGE_KEY], () => {
+          void chrome.runtime.lastError;
+        });
+      } catch (_) {}
+      return;
+    }
     try {
       chrome.runtime.sendMessage({ type: "wa-pos-auth-sync", auth }, () => {
         void chrome.runtime.lastError;
       });
     } catch (_) {}
     try {
-      chrome.storage.local.set({ [STORAGE_KEY]: auth }, () => {
+      // Per-origin key — must match posAuthCacheKey() in posAuth.js
+      chrome.storage.local.set({ [`${STORAGE_KEY}:${location.origin}`]: auth }, () => {
         void chrome.runtime.lastError;
       });
     } catch (_) {}

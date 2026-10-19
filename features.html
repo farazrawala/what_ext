@@ -1,0 +1,569 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Features – Store Sync POS Messenger</title>
+  <meta name="description" content="What the Store Sync POS Messenger extension does on WhatsApp Web: sending queued POS messages, saving customer replies, status tracking and reply settings.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@600;700;800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+  <style>
+    /* Layout: one reading column; hero pairs the pitch with a mock of the real sidebar; flows and settings carry the product's own vocabulary. */
+    :root {
+      --bg: #f4f7f6;
+      --surface: #ffffff;
+      --ink: #13201c;
+      --muted: #55665f;
+      --line: #d9e3df;
+      --accent: #0a5c4e;
+      --accent-soft: #e2f0ec;
+      --ok: #1d7f55;
+      --ok-soft: #e1f3ea;
+      --warn: #9a6512;
+      --warn-soft: #fbf0dc;
+      --err: #b8382f;
+      --err-soft: #fbe6e3;
+      --mock-head: #0a5c4e;
+      --mock-tabs: #084c41;
+      --mock-on: #ffffff;
+      --font-display: "Schibsted Grotesk", "Segoe UI", system-ui, sans-serif;
+      --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+      --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg: #0e1513;
+        --surface: #15201d;
+        --ink: #e4ece9;
+        --muted: #9aaca5;
+        --line: #273632;
+        --accent: #5cc7ab;
+        --accent-soft: #17332c;
+        --ok: #5fcf98;
+        --ok-soft: #173126;
+        --warn: #e8b45a;
+        --warn-soft: #33281333;
+        --err: #f08a80;
+        --err-soft: #3a1c1a;
+        --mock-head: #0d4d42;
+        --mock-tabs: #0a3f36;
+        --mock-on: #ffffff;
+        color-scheme: dark;
+      }
+    }
+    :root[data-theme="dark"] {
+      --bg: #0e1513;
+      --surface: #15201d;
+      --ink: #e4ece9;
+      --muted: #9aaca5;
+      --line: #273632;
+      --accent: #5cc7ab;
+      --accent-soft: #17332c;
+      --ok: #5fcf98;
+      --ok-soft: #173126;
+      --warn: #e8b45a;
+      --warn-soft: #33281333;
+      --err: #f08a80;
+      --err-soft: #3a1c1a;
+      --mock-head: #0d4d42;
+      --mock-tabs: #0a3f36;
+      --mock-on: #ffffff;
+      color-scheme: dark;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: var(--font-body);
+      font-size: 16px;
+      line-height: 1.6;
+    }
+    .page {
+      max-width: 920px;
+      margin: 0 auto;
+      padding-left: max(16px, env(safe-area-inset-left, 0px));
+      padding-right: max(16px, env(safe-area-inset-right, 0px));
+      padding-block: 48px 64px;
+      display: grid;
+      gap: 64px;
+    }
+    h1, h2, h3 {
+      font-family: var(--font-display);
+      text-wrap: balance;
+      margin: 0;
+      line-height: 1.15;
+    }
+    h1 { font-size: clamp(2rem, 5vw, 2.9rem); font-weight: 800; letter-spacing: -0.02em; }
+    h2 { font-size: 1.6rem; font-weight: 700; letter-spacing: -0.01em; }
+    h3 { font-size: 1.15rem; font-weight: 700; }
+    p { margin: 0; }
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--accent);
+    }
+    .muted { color: var(--muted); }
+    code, .mono { font-family: var(--font-mono); font-size: 0.88em; }
+    a { color: var(--accent); text-underline-offset: 3px; }
+    a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+
+    /* Hero */
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+      gap: 40px;
+      align-items: center;
+    }
+    .hero-text { display: grid; gap: 18px; min-width: 0; }
+    .lede { font-size: 1.15rem; max-width: 34em; }
+    .facts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 0;
+      margin: 4px 0 0;
+      list-style: none;
+    }
+    .facts li {
+      font-size: 0.85rem;
+      padding: 4px 12px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--surface);
+    }
+
+    /* Sidebar mock — mirrors the extension's real header, tabs and status lines */
+    .mock {
+      min-width: 0;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 18px 40px -24px rgba(10, 60, 50, 0.45);
+      font-family: Arial, sans-serif;
+      font-size: 13px;
+    }
+    .mock-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 14px;
+      background: var(--mock-head);
+      color: var(--mock-on);
+      font-weight: 700;
+    }
+    .mock-head .ver {
+      font-size: 11px;
+      padding: 1px 7px;
+      border-radius: 999px;
+      background: var(--mock-on);
+      color: var(--mock-head);
+    }
+    .mock-head .x { margin-left: auto; font-size: 18px; line-height: 1; opacity: 0.85; }
+    .mock-tabs { display: flex; background: var(--mock-tabs); }
+    .mock-tabs span {
+      flex: 1;
+      text-align: center;
+      padding: 8px 4px;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--mock-on);
+      opacity: 0.7;
+      border-bottom: 2px solid transparent;
+    }
+    .mock-tabs span.on { opacity: 1; border-bottom-color: var(--mock-on); }
+    .mock-body { display: grid; gap: 10px; padding: 14px; }
+    .mock-auth {
+      padding: 7px 10px;
+      border-radius: 6px;
+      background: var(--ok-soft);
+      color: var(--ok);
+      font-weight: 600;
+      font-size: 12px;
+    }
+    .mock-row { display: flex; align-items: center; gap: 10px; }
+    .mock-row .st { flex: 1; font-weight: 700; color: var(--accent); min-width: 0; }
+    .mock-btn {
+      padding: 7px 10px;
+      border-radius: 5px;
+      background: var(--err);
+      color: var(--surface);
+      font-weight: 600;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .mock-status {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .mock-start {
+      text-align: center;
+      padding: 9px;
+      border-radius: 5px;
+      background: var(--line);
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .caption { font-size: 0.8rem; color: var(--muted); margin-top: 8px; }
+
+    /* Sections */
+    section { display: grid; gap: 20px; }
+    .section-head { display: grid; gap: 8px; max-width: 40em; }
+
+    /* Two flows: real sequences, so numbered */
+    .flows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+    .flow {
+      min-width: 0;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 20px;
+      display: grid;
+      gap: 14px;
+      align-content: start;
+    }
+    .flow ol { margin: 0; padding: 0; list-style: none; counter-reset: step; display: grid; gap: 12px; }
+    .flow li { counter-increment: step; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; }
+    .flow li::before {
+      content: counter(step);
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      font-weight: 500;
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    /* Feature list */
+    .features { display: grid; gap: 0; border-top: 1px solid var(--line); }
+    .feature {
+      display: grid;
+      grid-template-columns: minmax(0, 15rem) minmax(0, 1fr);
+      gap: 24px;
+      padding-block: 26px;
+      border-bottom: 1px solid var(--line);
+    }
+    .feature-body { display: grid; gap: 12px; min-width: 0; }
+    .feature ul { margin: 0; padding-left: 1.15em; display: grid; gap: 6px; }
+
+    /* Status lines exactly as the sidebar prints them */
+    .log {
+      margin: 0;
+      padding: 12px 14px;
+      border-radius: 8px;
+      background: var(--bg);
+      border: 1px solid var(--line);
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.7;
+      overflow-x: auto;
+      white-space: pre;
+      color: var(--muted);
+    }
+    .log b { color: var(--ink); font-weight: 500; }
+
+    .chips { display: grid; gap: 8px; }
+    .chip {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 4px 10px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 0.9rem;
+    }
+    .chip strong { font-weight: 600; }
+    .chip span { font-size: 0.85rem; }
+    .chip.ok { background: var(--ok-soft); color: var(--ok); }
+    .chip.pending { background: var(--warn-soft); color: var(--warn); }
+    .chip.err { background: var(--err-soft); color: var(--err); }
+
+    /* Settings table */
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+    table { width: 100%; border-collapse: collapse; font-size: 0.93rem; }
+    th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    tr:last-child td { border-bottom: 0; }
+    th {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+    }
+    td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+    /* Getting started + requirements */
+    .two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 32px; }
+    .two > div { display: grid; gap: 14px; align-content: start; min-width: 0; }
+    .steps { margin: 0; padding-left: 1.3em; display: grid; gap: 8px; }
+    .plain { margin: 0; padding-left: 1.15em; display: grid; gap: 8px; }
+
+    footer {
+      border-top: 1px solid var(--line);
+      padding-top: 24px;
+      display: grid;
+      gap: 10px;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+    .contact { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .contact .mono { color: var(--ink); user-select: all; }
+    .copy {
+      font: inherit;
+      font-size: 0.8rem;
+      padding: 3px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--ink);
+      cursor: pointer;
+    }
+    .copy:hover { border-color: var(--accent); }
+
+    @media (max-width: 760px) {
+      .page { padding-block: 32px 48px; gap: 48px; }
+      .hero, .flows, .two { grid-template-columns: minmax(0, 1fr); }
+      .feature { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+    }
+  </style>
+</head>
+<body>
+<main class="page">
+  <header class="hero">
+    <div class="hero-text">
+      <span class="eyebrow">Chrome extension for WhatsApp Web</span>
+      <h1>Store Sync POS Messenger</h1>
+      <p class="lede">Sends the customer messages queued in your Store Sync POS through your own WhatsApp Web, and saves your customers' replies back into the POS.</p>
+      <ul class="facts">
+        <li>Version 1.103</li>
+        <li>Chrome and Edge</li>
+        <li>Needs a Store Sync POS account</li>
+      </ul>
+    </div>
+    <figure style="margin:0; min-width:0;">
+      <div class="mock" aria-label="Example of the extension sidebar on WhatsApp Web">
+        <div class="mock-head">Store Sync POS Messenger <span class="ver">v1.103</span><span class="x" aria-hidden="true">&times;</span></div>
+        <div class="mock-tabs"><span class="on">Start Sending Messages</span><span>Received</span><span>Settings</span></div>
+        <div class="mock-body">
+          <div class="mock-auth">POS connected — Welcome Your Store</div>
+          <div class="mock-row"><span class="st">Listening for new messages...</span><span class="mock-btn">Stop Listening</span></div>
+          <div class="mock-status">Next message in 8s</div>
+          <div class="mock-start">Start</div>
+        </div>
+      </div>
+      <figcaption class="caption">The sidebar opens on the right side of WhatsApp Web. Example data.</figcaption>
+    </figure>
+  </header>
+
+  <section aria-labelledby="how">
+    <div class="section-head">
+      <span class="eyebrow">How it works</span>
+      <h2 id="how">Two jobs, running side by side</h2>
+      <p class="muted">Your team queues messages in the POS as usual. The extension does the WhatsApp side, using the WhatsApp account signed in on that computer.</p>
+    </div>
+    <div class="flows">
+      <div class="flow">
+        <h3>Sending queued messages</h3>
+        <ol>
+          <li><span>Someone presses <strong>Start</strong> in the sidebar.</span></li>
+          <li><span>The extension asks the POS for the next message waiting to be sent.</span></li>
+          <li><span>It opens that customer's chat in WhatsApp Web with the message filled in, and presses Send.</span></li>
+          <li><span>It marks the message <strong>sent</strong> in the POS, or <strong>not available</strong> if the number isn't on WhatsApp.</span></li>
+          <li><span>It waits a few seconds, then moves on to the next one until you press Stop.</span></li>
+        </ol>
+      </div>
+      <div class="flow">
+        <h3>Saving customer replies</h3>
+        <ol>
+          <li><span>Someone presses <strong>Start Listening</strong>.</span></li>
+          <li><span>The extension watches the chat list for chats with unread messages.</span></li>
+          <li><span>It opens those chats one at a time and copies the new text messages from customers.</span></li>
+          <li><span>It saves each message to the POS with the customer's number, your number and the WhatsApp time.</span></li>
+          <li><span>It keeps checking for new messages until you press Stop Listening.</span></li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="features">
+    <div class="section-head">
+      <span class="eyebrow">Features</span>
+      <h2 id="features">What it does</h2>
+    </div>
+    <div class="features">
+
+      <article class="feature">
+        <h3>Sends POS messages from WhatsApp Web</h3>
+        <div class="feature-body">
+          <p>Sends the messages your Store Sync POS has queued, one at a time, from your own WhatsApp number. Each one is marked in the POS, so your team can see what went out.</p>
+          <ul>
+            <li>A short countdown before each message and a random pause of a few seconds between messages.</li>
+            <li>Numbers that aren't on WhatsApp are skipped: the extension closes WhatsApp's popup and marks them <strong>not available</strong>.</li>
+            <li>When the queue is empty it keeps checking, so new messages go out without pressing Start again.</li>
+            <li>Stop at any time. A stopped run never sends a half-finished message.</li>
+          </ul>
+          <pre class="log" aria-label="Example status lines while sending"><b>Fetching next message...</b>
+3...
+<b>Sent &amp; marked: 923001234567</b>
+Next message in 8s
+<b>Number not on WhatsApp. Closing popup in 3s...</b>
+Marked not available: 923009876543</pre>
+        </div>
+      </article>
+
+      <article class="feature">
+        <h3>Saves customer replies to the POS</h3>
+        <div class="feature-body">
+          <p>While listening is on, new text messages from customers are copied into your Store Sync POS, so your team can follow up there.</p>
+          <ul>
+            <li>Messages you sent yourself are skipped.</li>
+            <li>Messages that synced to WhatsApp Web are captured even if they were already read on the phone.</li>
+            <li>Only recent messages are read (the last 1 day by default), so old history isn't imported.</li>
+            <li>Each message is saved once. The extension remembers what it has already captured.</li>
+            <li>Chats are opened with a gap of 1–2 minutes between them by default, so WhatsApp Web isn't flooded.</li>
+          </ul>
+          <pre class="log" aria-label="Example status lines while listening"><b>Listening for new messages...</b>
+New message in: Ali Raza...
+<b>Back online — checking unread...</b></pre>
+        </div>
+      </article>
+
+      <article class="feature">
+        <h3>Shows what reached the POS</h3>
+        <div class="feature-body">
+          <p>The <strong>Received</strong> tab lists every captured message with its save status. If the POS can't be reached, the extension retries on its own.</p>
+          <div class="chips">
+            <div class="chip ok"><strong>Posted to chat API</strong><span>Saved in the POS.</span></div>
+            <div class="chip pending"><strong>Not posted yet</strong><span>Waiting to be sent to the POS.</span></div>
+            <div class="chip err"><strong>Post failed: HTTP 500</strong><span>The reason is shown, and it's retried every 60 seconds.</span></div>
+          </div>
+        </div>
+      </article>
+
+      <article class="feature">
+        <h3>Uses your POS sign-in</h3>
+        <div class="feature-body">
+          <p>There is nothing extra to log in to. Keep Store Sync POS open and signed in, in the same Chrome window, and the extension uses that session. The sidebar and the toolbar popup both show which company is connected.</p>
+        </div>
+      </article>
+
+      <article class="feature">
+        <h3>Picks up where it left off</h3>
+        <div class="feature-body">
+          <ul>
+            <li>If WhatsApp Web reloads in the middle of a run, sending resumes with the message it was on.</li>
+            <li>If the connection drops, listening checks for unread chats as soon as it's back online.</li>
+            <li>If WhatsApp Web rebuilds its page, the listener restarts itself.</li>
+          </ul>
+        </div>
+      </article>
+
+      <article class="feature">
+        <h3>One click to open</h3>
+        <div class="feature-body">
+          <p>The toolbar popup has an <strong>Open WhatsApp Web</strong> button. It opens WhatsApp Web in a new tab, or shows the sidebar if WhatsApp Web is already open. The × button hides the sidebar.</p>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <section aria-labelledby="settings">
+    <div class="section-head">
+      <span class="eyebrow">Settings tab</span>
+      <h2 id="settings">Reply settings you can change</h2>
+      <p class="muted">Saved in this browser only. Changes apply straight away, and listening restarts if it's on. <strong>Reset to defaults</strong> puts everything back.</p>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th scope="col">Setting</th><th scope="col">Default</th><th scope="col">Allowed</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Enable message reading</td><td class="num">On</td><td class="num">On / Off</td></tr>
+          <tr><td>Read messages from last (days)</td><td class="num">1</td><td class="num">1–30</td></tr>
+          <tr><td>Min gap between chats (seconds)</td><td class="num">60</td><td class="num">5–3600</td></tr>
+          <tr><td>Max gap between chats (seconds)</td><td class="num">120</td><td class="num">5–3600</td></tr>
+          <tr><td>Check for new messages every (seconds)</td><td class="num">30</td><td class="num">5–600</td></tr>
+          <tr><td>Give up opening a chat after (seconds)</td><td class="num">45</td><td class="num">10–600</td></tr>
+          <tr><td>Re-check unread badges every (seconds)</td><td class="num">16</td><td class="num">5–600</td></tr>
+          <tr><td>Retry failed API posts every (seconds)</td><td class="num">60</td><td class="num">10–3600</td></tr>
+          <tr><td>Remember captured message IDs (count)</td><td class="num">500</td><td class="num">50–5000</td></tr>
+          <tr><td>Received list size (messages)</td><td class="num">50</td><td class="num">10–500</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="muted" style="font-size:0.9rem;">Turning message reading off keeps sending working and hides the listening controls.</p>
+  </section>
+
+  <section aria-labelledby="start" class="two">
+    <div>
+      <span class="eyebrow">Getting started</span>
+      <h2 id="start">First run</h2>
+      <ol class="steps">
+        <li>Sign in to Store Sync POS in Chrome and keep that tab open.</li>
+        <li>Click the extension icon and choose <strong>Open WhatsApp Web</strong>.</li>
+        <li>Sign in to WhatsApp Web with the business's WhatsApp account.</li>
+        <li>Check that the sidebar says <strong>POS connected</strong>.</li>
+        <li>Press <strong>Start</strong> to send queued messages, and <strong>Start Listening</strong> to save replies.</li>
+      </ol>
+    </div>
+    <div>
+      <span class="eyebrow">Good to know</span>
+      <h2>Requirements and privacy</h2>
+      <ul class="plain">
+        <li>Needs Chrome or Edge on a computer, a Store Sync POS account, and WhatsApp Web signed in.</li>
+        <li>Keep the WhatsApp Web tab open while sending or listening.</li>
+        <li>Message data goes only to your Store Sync POS server. Nothing is sold, used for advertising, or shared with anyone else.</li>
+        <li>The extension only runs on WhatsApp Web and your Store Sync POS site.</li>
+        <li>Full policy: <a href="https://testv3.websitedemolynk.com/pos/privacy-policy.html">privacy policy</a>.</li>
+      </ul>
+    </div>
+  </section>
+
+  <footer>
+    <div class="contact">
+      <span>Support from OrdersHub:</span>
+      <span class="mono" id="support-email">info@ordershub.pk</span>
+      <button type="button" class="copy" id="copy-email">Copy</button>
+    </div>
+    <p>Store Sync POS Messenger is not affiliated with, endorsed by, or sponsored by WhatsApp or Meta. WhatsApp is a trademark of WhatsApp LLC.</p>
+  </footer>
+</main>
+
+<script>
+  (function () {
+    var btn = document.getElementById("copy-email");
+    var email = document.getElementById("support-email");
+    btn.addEventListener("click", function () {
+      var text = email.textContent.trim();
+      function selectIt() {
+        var range = document.createRange();
+        range.selectNodeContents(email);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        btn.textContent = "Selected";
+      }
+      try {
+        navigator.clipboard.writeText(text).then(function () {
+          btn.textContent = "Copied";
+        }, selectIt);
+      } catch (e) {
+        selectIt();
+      }
+    });
+  })();
+</script>
+</body>
+</html>

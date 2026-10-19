@@ -67,6 +67,42 @@ input::placeholder {
   cursor: pointer;
 }
 
+/* Local builds only: Local/Live API switch in the header */
+.wa-env-toggle {
+  display: inline-flex;
+  flex-shrink: 0;
+  padding: 2px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.wa-env-toggle button {
+  border: 0;
+  border-radius: 999px;
+  padding: 3px 9px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.wa-env-toggle button:hover {
+  color: #fff;
+}
+
+.wa-env-toggle button[aria-pressed="true"] {
+  background: #fff;
+  color: #075e54;
+  cursor: default;
+}
+
+/* Live hits real POS data — make it hard to miss */
+.wa-env-toggle button[data-env="live"][aria-pressed="true"] {
+  background: #f5b82e;
+  color: #3d2c00;
+}
+
 .wa-tabs {
   display: flex;
   background: #064e46;
@@ -134,6 +170,17 @@ input::placeholder {
 }
 
 .wa-pos-auth-status.is-error {
+  background: rgba(185, 28, 28, 0.08);
+  color: #b91c1c;
+  border: 1px solid rgba(185, 28, 28, 0.2);
+}
+
+.wa-stale-banner {
+  font-size: 13px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  line-height: 1.4;
   background: rgba(185, 28, 28, 0.08);
   color: #b91c1c;
   border: 1px solid rgba(185, 28, 28, 0.2);

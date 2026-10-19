@@ -26,6 +26,7 @@ const path = require("path");
 const zlib = require("zlib");
 const { minify } = require("terser");
 const JavaScriptObfuscator = require("javascript-obfuscator");
+const { loadEnvConfig } = require("./env-source");
 
 const ROOT = path.resolve(__dirname, "..");
 const BUILD_ROOT = path.join(ROOT, "build");
@@ -55,23 +56,6 @@ function parseEnvArg() {
     throw new Error(`Invalid env "${name}". Use --env=local or --env=live`);
   }
   return name;
-}
-
-function loadEnvConfig(envName) {
-  const src = path.join(ROOT, "env", `${envName}.js`);
-  if (!fs.existsSync(src)) {
-    throw new Error(`Missing env file: env/${envName}.js`);
-  }
-  // Evaluate in a sandbox-ish scope
-  const code = fs.readFileSync(src, "utf8");
-  const sandbox = { self: {}, window: undefined };
-  // eslint-disable-next-line no-new-func
-  const fn = new Function("self", "window", `${code}\n; return typeof WA_ENV !== "undefined" ? WA_ENV : self.WA_ENV;`);
-  const env = fn(sandbox.self, undefined);
-  if (!env?.name || !env?.posOrigin) {
-    throw new Error(`Invalid WA_ENV in env/${envName}.js`);
-  }
-  return { env, sourcePath: src, sourceCode: code };
 }
 
 function readVersion() {
@@ -333,8 +317,11 @@ function buildManifest(destDir, version, env) {
     base.description = `Local development build. POS: ${env.posUrl}`;
   }
 
-  // POS bridge and host access only on this environment's hosts
-  const posMatches = Array.isArray(env.posTabMatch) ? env.posTabMatch : [];
+  // POS bridge and host access only on this environment's hosts (local builds
+  // also need the hosts their sidebar API toggle can switch to)
+  const posMatches = [env, ...Object.values(env.alternates || {})].flatMap((e) =>
+    Array.isArray(e.posTabMatch) ? e.posTabMatch : [],
+  );
   base.host_permissions = ["https://web.whatsapp.com/*", ...posMatches];
   base.content_scripts = [
     {
@@ -376,7 +363,8 @@ Install (Chrome / Edge)
 Notes
 - POS auth uses localStorage authToken (or cookies). Keep the POS tab open.
 - This package is ${env.name === "live" ? "minified only (no obfuscation, as the Chrome Web Store requires)" : "minified/obfuscated (harder to read, not impossible to copy)"}.
-- Local and Live builds are separate — do not mix them.
+- Local and Live builds are separate — do not mix them.${env.alternates ? `
+- The sidebar header has a Local/Live toggle to point this build at the live POS APIs.` : ""}
 
 Built from manifest version ${version}, env=${env.name}.
 `;

@@ -324,7 +324,8 @@ function buildManifest(destDir, version, env) {
   const posMatches = [env, ...Object.values(env.alternates || {})].flatMap((e) =>
     Array.isArray(e.posTabMatch) ? e.posTabMatch : [],
   );
-  base.host_permissions = ["https://web.whatsapp.com/*", ...posMatches];
+  // api.x.ai: Grok session tokens for the AI call agent (background.js)
+  base.host_permissions = ["https://web.whatsapp.com/*", "https://api.x.ai/*", ...posMatches];
   base.content_scripts = [
     {
       // Page-world audio tap for call recording — must load before WhatsApp

@@ -2263,6 +2263,32 @@
             <button type="submit" id="wa-settings-save">Save Settings</button>
             <button type="button" id="wa-settings-reset" class="wa-settings-reset">Reset to defaults</button>
           </form>
+          <form id="wa-agent-settings-form" class="wa-agent-settings" novalidate>
+            <h3>AI call agent</h3>
+            <p class="wa-hint">Saved in this browser's extension storage only — never in the page. {store} and {order} are filled in for each call.</p>
+            <label for="wa-agent-provider">AI provider</label>
+            <select id="wa-agent-provider" name="provider">
+              <option value="gemini">Google Gemini Live (free tier available)</option>
+              <option value="grok">xAI Grok Voice</option>
+            </select>
+            <label for="wa-agent-gemini-key">Gemini API key (from aistudio.google.com)</label>
+            <input type="password" id="wa-agent-gemini-key" name="geminiKey" autocomplete="off" spellcheck="false" />
+            <label for="wa-agent-key">xAI API key</label>
+            <input type="password" id="wa-agent-key" name="apiKey" autocomplete="off" spellcheck="false" />
+            <label for="wa-agent-store">Store name</label>
+            <input type="text" id="wa-agent-store" name="store" />
+            <label for="wa-agent-model">Model (Gemini only)</label>
+            <input type="text" id="wa-agent-model" name="model" spellcheck="false" placeholder="gemini-3.1-flash-live-preview" />
+            <label for="wa-agent-voice">Voice</label>
+            <input type="text" id="wa-agent-voice" name="voice" placeholder="Gemini: Kore · Grok: ara" />
+            <label for="wa-agent-greeting">Opening line (spoken word for word)</label>
+            <textarea id="wa-agent-greeting" name="greeting" dir="auto"></textarea>
+            <label for="wa-agent-instructions">Instructions</label>
+            <textarea id="wa-agent-instructions" name="instructions" class="wa-agent-instructions"></textarea>
+            <div id="wa-agent-settings-status" class="wa-send-status"></div>
+            <button type="submit">Save agent settings</button>
+            <button type="button" id="wa-agent-settings-reset" class="wa-settings-reset">Reset text to defaults</button>
+          </form>
         </div>
         <div id="wa-send-controls">
           <div class="wa-api-urls-hidden" aria-hidden="true" style="display: flex; gap: 10px; margin-bottom: 10px;">
@@ -2282,11 +2308,25 @@
           </div>
           <div class="wa-call-box">
             <div class="wa-call-chat">Open chat: <strong id="wa-call-chat">No chat open</strong></div>
+            <label class="wa-settings-check wa-agent-toggle"><input type="checkbox" id="wa-agent-enabled" /> AI agent talks on this call</label>
+            <textarea id="wa-agent-order" class="wa-agent-order" placeholder="Order details for the agent (optional), e.g. Order #1234: 2 × LED bulb, Rs 1,500, cash on delivery" hidden></textarea>
             <div class="wa-call-actions">
               <button id="wa-call-btn" type="button">Voice call</button>
               <button id="wa-record-btn" type="button">Record</button>
             </div>
+            <div id="wa-agent-monitor" class="wa-agent-monitor" hidden>
+              <div class="wa-agent-checks">
+                <span id="wa-agent-chk-mic" class="wa-agent-chk">Agent mic</span>
+                <span id="wa-agent-chk-ears" class="wa-agent-chk">Hearing them</span>
+                <span id="wa-agent-chk-greet" class="wa-agent-chk">Greeting</span>
+              </div>
+              <div class="wa-agent-meter" title="How loud the other side is"><div id="wa-agent-meter-bar"></div></div>
+              <button id="wa-agent-greet-now" class="wa-agent-takeover" type="button" hidden>Customer answered — start agent</button>
+            </div>
+            <button id="wa-agent-takeover" class="wa-agent-takeover" type="button" hidden>Take over the call</button>
             <div id="wa-call-status" class="wa-call-status">Record saves only the call's voices (you + them) as an .mp3 file.</div>
+            <div id="wa-agent-transcript" class="wa-agent-transcript" hidden></div>
+            <ul id="wa-agent-results" class="wa-agent-results"></ul>
           </div>
         </div>
       </div>
@@ -4843,7 +4883,15 @@
       const nameEl = sidebar.querySelector("#wa-call-chat");
       if (nameEl) nameEl.textContent = chatName || "No chat open";
       const callBtn = sidebar.querySelector("#wa-call-btn");
-      if (callBtn && !callUiFrozen) callBtn.disabled = !chatName;
+      if (callBtn && !callUiFrozen) callBtn.disabled = !chatName || !!agentCall;
+      const agentOn = !!sidebar.querySelector("#wa-agent-enabled")?.checked;
+      const orderEl = sidebar.querySelector("#wa-agent-order");
+      if (orderEl) orderEl.hidden = !agentOn;
+      const takeoverBtn = sidebar.querySelector("#wa-agent-takeover");
+      if (takeoverBtn) {
+        takeoverBtn.hidden = !agentCall || !agentCall.ready || agentTapState.takenOver;
+      }
+      renderAgentMonitor();
       const recBtn = sidebar.querySelector("#wa-record-btn");
       if (recBtn) {
         recBtn.classList.toggle("is-recording", callRec.recording);
@@ -4897,9 +4945,552 @@
       setCallStatus(`Calling ${chatName}…`);
     }
 
+    // ---- AI call agent (Gemini Live or Grok Voice) ----
+    // callTap.js swaps WhatsApp's mic for the agent's voice and streams the
+    // customer's voice out; background.js holds the AI session. This block
+    // wires the two together and decides when the agent speaks first.
+    const AGENT_SETTINGS_KEY = "wa_grok_agent_settings";
+    const AGENT_RESULTS_KEY = "wa_grok_call_results";
+    const AGENT_CMD_EVENT = "wa-ext:agent-cmd";
+    const AGENT_EVENT = "wa-ext:agent-evt";
+    // Peak levels (0–1) of the customer's audio, used to tell when they answer
+    const AGENT_LINE_OPEN_LEVEL = 0.006;
+    const AGENT_SPEECH_LEVEL = 0.04;
+    const AGENT_DEFAULT_GREETING =
+      "السلام علیکم! یہ {store} کی طرف سے ایک خودکار کال ہے۔ ہمیں آپ کا آرڈر موصول ہوا ہے، کیا آپ اس آرڈر کی تصدیق کرتے ہیں؟";
+    const AGENT_DEFAULT_INSTRUCTIONS = `You are a polite phone agent for {store}, on a WhatsApp voice call with a customer to confirm their order. You have already greeted them and asked them to confirm the order.
+
+Language: speak natural Pakistani Urdu. If the customer speaks English, reply in English. Keep every reply to one or two short sentences.
+
+Order details: {order}
+
+What to do:
+- Find out whether the customer confirms the order. If they ask, read back the order details above. Never make up details that are not there; if asked something you don't know, say a team member will message them on WhatsApp.
+- If they want a change (address, items, delivery time), note exactly what they want.
+- If asked, say you are an automated assistant.
+- Never guess the customer's name. Only use a name if it is in the order details.
+- As soon as the result is clear, call record_order_outcome. Then thank them, say goodbye in one short sentence, and call end_call.
+- If they are busy, ask when to call back, record call_back_later, and end the call politely.`;
+    const AGENT_OUTCOME_LABELS = {
+      confirmed: "Confirmed",
+      cancelled: "Cancelled",
+      change_requested: "Wants a change",
+      call_back_later: "Call back later",
+      wrong_number: "Wrong number",
+      unclear: "Unclear",
+      no_result: "No result",
+    };
+    const AGENT_PROVIDERS = {
+      gemini: { label: "Gemini", keyField: "geminiKey", voice: "Kore" },
+      grok: { label: "Grok", keyField: "apiKey", voice: "ara" },
+    };
+    const AGENT_KEY_FIELDS = ["apiKey", "geminiKey"];
+    const AGENT_TEXT_FIELDS = ["provider", "store", "model", "voice", "greeting", "instructions"];
+    let agentCall = null;
+    let agentTapReady = false;
+    let agentTapState = { armed: false, onCall: false, speaking: false };
+
+    function sendAgentCommand(cmd, extra = {}) {
+      document.dispatchEvent(
+        new CustomEvent(AGENT_CMD_EVENT, {
+          detail: JSON.stringify({ cmd, ...extra }),
+        }),
+      );
+    }
+
+    async function loadAgentSettings() {
+      let stored = {};
+      try {
+        stored = (await chrome.storage.local.get(AGENT_SETTINGS_KEY))?.[AGENT_SETTINGS_KEY] || {};
+      } catch (_) {}
+      return {
+        provider: AGENT_PROVIDERS[stored.provider] ? stored.provider : "gemini",
+        apiKey: String(stored.apiKey || ""),
+        geminiKey: String(stored.geminiKey || ""),
+        store: String(stored.store || ""),
+        model: String(stored.model || ""),
+        voice: String(stored.voice || ""),
+        greeting: String(stored.greeting || AGENT_DEFAULT_GREETING),
+        instructions: String(stored.instructions || AGENT_DEFAULT_INSTRUCTIONS),
+      };
+    }
+
+    function fillAgentTemplate(text, settings, order) {
+      return String(text)
+        .replaceAll("{store}", settings.store.trim() || "ہمارے اسٹور")
+        .replaceAll(
+          "{order}",
+          order.trim() ||
+            "Not provided. Just ask them to confirm the order they placed with us.",
+        );
+    }
+
+    // Customer transcripts grow while they talk: same itemId updates one line
+    function showAgentTranscript(role, text, itemId = "") {
+      const el = sidebar.querySelector("#wa-agent-transcript");
+      if (!el || !text) return;
+      el.hidden = false;
+      let line =
+        itemId ?
+          [...el.children].find((c) => c.dataset.itemId === itemId)
+        : null;
+      if (!line) {
+        line = document.createElement("div");
+        line.className = `wa-agent-line is-${role}`;
+        line.dir = "auto";
+        if (itemId) line.dataset.itemId = itemId;
+        el.append(line);
+      }
+      line.textContent = `${role === "agent" ? "Agent" : "Customer"}: ${text}`;
+      while (el.children.length > 6) el.firstChild.remove();
+    }
+
+    async function loadAgentResults() {
+      try {
+        const list = (await chrome.storage.local.get(AGENT_RESULTS_KEY))?.[AGENT_RESULTS_KEY];
+        return Array.isArray(list) ? list : [];
+      } catch (_) {
+        return [];
+      }
+    }
+
+    async function saveAgentResult(entry) {
+      const list = [entry, ...(await loadAgentResults())].slice(0, 20);
+      try {
+        await chrome.storage.local.set({ [AGENT_RESULTS_KEY]: list });
+      } catch (_) {}
+      renderAgentResults(list);
+    }
+
+    function renderAgentResults(list) {
+      const ul = sidebar.querySelector("#wa-agent-results");
+      if (!ul) return;
+      ul.replaceChildren(
+        ...list.slice(0, 5).map((r) => {
+          const li = document.createElement("li");
+          li.className = `wa-agent-result is-${r.outcome}`;
+          const head = document.createElement("div");
+          const name = document.createElement("strong");
+          name.textContent = r.chatName;
+          const badge = document.createElement("span");
+          badge.className = "wa-agent-badge";
+          badge.textContent = AGENT_OUTCOME_LABELS[r.outcome] || r.outcome;
+          head.append(name, " ", badge);
+          li.append(head);
+          if (r.notes) {
+            const notes = document.createElement("div");
+            notes.className = "wa-agent-notes";
+            notes.textContent = r.notes;
+            li.append(notes);
+          }
+          return li;
+        }),
+      );
+    }
+
+    function waitFor(check, timeoutMs) {
+      return new Promise((resolve) => {
+        const started = Date.now();
+        const timer = setInterval(() => {
+          if (check()) {
+            clearInterval(timer);
+            resolve(true);
+          } else if (Date.now() - started > timeoutMs) {
+            clearInterval(timer);
+            resolve(false);
+          }
+        }, 100);
+      });
+    }
+
+    // WhatsApp's own hang-up button in the call window
+    function findEndCallButton() {
+      return (
+        [...document.querySelectorAll('button, [role="button"]')].find((el) => {
+          if (sidebar.contains(el)) return false;
+          const label = `${el.getAttribute("aria-label") || ""} ${el.getAttribute("title") || ""}`;
+          const icon = el.querySelector("[data-icon]")?.getAttribute("data-icon") || "";
+          return /end call|hang ?up|leave call/i.test(label) || /end-call|call-end|hang-?up/i.test(icon);
+        }) || null
+      );
+    }
+
+    async function startAgentCall() {
+      if (agentCall) return;
+      const chatName = getOpenChatName();
+      if (!chatName) {
+        setCallStatus("Open a chat first.");
+        return;
+      }
+      if (!agentTapReady) {
+        setCallStatus(
+          "Refresh WhatsApp Web once, then try again (needed after installing or updating the extension).",
+        );
+        return;
+      }
+      const settings = await loadAgentSettings();
+      const provider = AGENT_PROVIDERS[settings.provider];
+      if (!settings[provider.keyField].trim()) {
+        setCallStatus(`Add your ${provider.label} API key in Settings → AI call agent first.`);
+        return;
+      }
+      if (!findVoiceCallButton()) {
+        setCallStatus(
+          "No call button in this chat. WhatsApp Web calling may not be on for this account yet.",
+        );
+        return;
+      }
+      const order = sidebar.querySelector("#wa-agent-order")?.value || "";
+      const call = {
+        chatName,
+        settings,
+        greeting: fillAgentTemplate(settings.greeting, settings, order),
+        port: null,
+        ready: false,
+        error: "",
+        greeted: false,
+        lineOpenAt: 0,
+        heardSpeech: false,
+        lastLoudAt: 0,
+        outcome: null,
+        ending: false,
+      };
+      agentCall = call;
+      sidebar.querySelector("#wa-agent-transcript")?.replaceChildren();
+      setCallStatus(`Connecting to ${provider.label}…`);
+      renderCallUi();
+
+      try {
+        call.port = chrome.runtime.connect({ name: "wa-call-agent" });
+      } catch (_) {
+        endAgentCall("The extension was updated — refresh this tab.");
+        return;
+      }
+      call.port.onMessage.addListener((m) => onAgentSessionMessage(call, m));
+      call.port.onDisconnect.addListener(() => {
+        if (agentCall === call) endAgentCall(`Lost the connection to ${provider.label}.`);
+      });
+      call.port.postMessage({
+        type: "start",
+        provider: settings.provider,
+        model: settings.model.trim(),
+        instructions: fillAgentTemplate(settings.instructions, settings, order),
+        voice: settings.voice.trim() || provider.voice,
+      });
+
+      const ready = await waitFor(() => call.ready || !!call.error, 15000);
+      if (agentCall !== call) return;
+      if (!ready || call.error) {
+        endAgentCall(call.error || `${provider.label} didn't answer in time.`);
+        return;
+      }
+      // Arm before calling: WhatsApp grabs the mic as the call starts
+      sendAgentCommand("arm");
+      const armed = await waitFor(() => agentTapState.armed, 5000);
+      if (agentCall !== call) return;
+      if (!armed) {
+        endAgentCall("Couldn't set up the agent's microphone.");
+        return;
+      }
+      await startVoiceCall();
+      if (agentCall === call) setCallStatus(`Agent is calling ${chatName}…`);
+    }
+
+    function onAgentSessionMessage(call, m) {
+      if (agentCall !== call) return;
+      if (m.type === "ready") {
+        call.ready = true;
+      } else if (m.type === "error") {
+        if (m.fatal || !call.ready) {
+          call.error = m.error;
+          if (call.ready) endAgentCall(m.error);
+        } else {
+          console.warn("[WA] call agent →", m.error);
+        }
+      } else if (m.type === "audio") {
+        sendAgentCommand("play", { audio: m.audio });
+      } else if (m.type === "interrupt") {
+        sendAgentCommand("clear");
+      } else if (m.type === "transcript") {
+        showAgentTranscript(m.role, m.text, m.itemId);
+      } else if (m.type === "tool") {
+        handleAgentTool(call, m);
+      } else if (m.type === "closed") {
+        endAgentCall(`${AGENT_PROVIDERS[call.settings.provider].label} ended the session.`);
+      }
+    }
+
+    function handleAgentTool(call, m) {
+      let args = {};
+      try {
+        args = JSON.parse(m.args || "{}");
+      } catch (_) {}
+      const reply = (output, respond) =>
+        call.port?.postMessage({
+          type: "tool_result",
+          call_id: m.call_id,
+          output: JSON.stringify(output),
+          respond,
+        });
+      if (m.name === "record_order_outcome") {
+        const outcome = AGENT_OUTCOME_LABELS[args.outcome] ? args.outcome : "unclear";
+        call.outcome = { outcome, notes: String(args.notes || "").trim() };
+        saveAgentResult({ at: Date.now(), chatName: call.chatName, ...call.outcome });
+        setCallStatus(`Result: ${AGENT_OUTCOME_LABELS[outcome]}`);
+        reply({ saved: true }, true);
+      } else if (m.name === "end_call") {
+        reply({ ok: true }, false);
+        hangUpAfterGoodbye(call);
+      } else {
+        reply({ error: `Unknown tool ${m.name}` }, true);
+      }
+    }
+
+    // Lets the goodbye finish playing, then presses WhatsApp's hang-up button
+    async function hangUpAfterGoodbye(call) {
+      if (call.ending) return;
+      call.ending = true;
+      await sleep(600);
+      await waitFor(() => !agentTapState.speaking, 10000);
+      await sleep(500);
+      if (agentCall !== call) return;
+      const btn = findEndCallButton();
+      if (btn) {
+        if (!simulateUserClick(btn)) btn.click();
+      } else {
+        setCallStatus("Agent is done — please hang up the call.");
+      }
+    }
+
+    function greetCustomer(call, why) {
+      if (call.greeted || !call.ready) return;
+      call.greeted = true;
+      console.log("[WA] call agent: greeting →", why);
+      sendAgentCommand("answered");
+      call.port?.postMessage({ type: "greet", text: call.greeting });
+      showAgentTranscript("agent", call.greeting);
+      setCallStatus("Agent is talking…");
+      renderCallUi();
+    }
+
+    // WhatsApp's call window shows a ticking "0:05" once the call connects.
+    // Message times sit in #main / #pane-side, so those are skipped.
+    function callTimerRunning(call) {
+      const seen = new Map();
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const m = node.nodeValue.trim().match(/^(\d{1,2}):(\d{2})$/);
+        if (!m) continue;
+        const el = node.parentElement;
+        if (!el || sidebar.contains(el) || el.closest("#main, #pane-side")) continue;
+        seen.set(node, Number(m[1]) * 60 + Number(m[2]));
+      }
+      const prev = call.timerNodes || new Map();
+      call.timerNodes = seen;
+      for (const [node, secs] of seen) {
+        const before = prev.get(node);
+        if (before != null && secs > before && secs - before <= 3) return true;
+      }
+      return false;
+    }
+
+    // Greets once the customer has answered: after their "hello", once the
+    // call timer starts, or a few seconds after the line opens if they stay
+    // quiet. Their audio isn't sent to the AI before that, so the greeting
+    // always comes first. Page-only audio (no call track) may include the
+    // ringing tone, so it only counts toward the timer and the manual button.
+    function onAgentAudio(call, m) {
+      const level = Number(m.level) || 0;
+      call.peak = Math.max(level, (call.peak || 0) * 0.7);
+      const bar = sidebar.querySelector("#wa-agent-meter-bar");
+      if (bar) bar.style.width = `${Math.min(100, Math.round(call.peak * 250))}%`;
+      if (!call.ready) return;
+      if (call.greeted) {
+        call.port?.postMessage({ type: "audio", audio: m.audio });
+        return;
+      }
+      if (!agentTapState.them) return;
+      const now = Date.now();
+      if (level > AGENT_LINE_OPEN_LEVEL && !call.lineOpenAt) call.lineOpenAt = now;
+      if (level > AGENT_SPEECH_LEVEL) {
+        call.heardSpeech = true;
+        call.lastLoudAt = now;
+      }
+      if (call.heardSpeech && now - call.lastLoudAt > 700) greetCustomer(call, "after hello");
+      else if (call.lineOpenAt && now - call.lineOpenAt > 5000) greetCustomer(call, "line open");
+    }
+
+    function setAgentCheck(id, ok, text) {
+      const el = sidebar.querySelector(id);
+      if (!el) return;
+      el.classList.toggle("is-ok", ok);
+      el.textContent = `${ok ? "✓" : "…"} ${text}`;
+    }
+
+    function renderAgentMonitor() {
+      const monitor = sidebar.querySelector("#wa-agent-monitor");
+      const transcript = sidebar.querySelector("#wa-agent-transcript");
+      const call = agentCall;
+      if (monitor) monitor.hidden = !call;
+      if (!call) return;
+      if (transcript) transcript.hidden = false;
+      const s = agentTapState;
+      setAgentCheck("#wa-agent-chk-mic", !!s.onCall, s.onCall ? "Agent mic on call" : "Agent mic waiting");
+      setAgentCheck(
+        "#wa-agent-chk-ears",
+        !!(s.them || s.webAudio),
+        s.them ? "Hearing them" : s.webAudio ? "Hearing page audio" : "Can't hear them yet",
+      );
+      setAgentCheck("#wa-agent-chk-greet", call.greeted, call.greeted ? "Agent started" : "Waiting for answer");
+      const bar = sidebar.querySelector("#wa-agent-meter-bar");
+      if (bar) bar.style.width = `${Math.min(100, Math.round((call.peak || 0) * 250))}%`;
+      const greetBtn = sidebar.querySelector("#wa-agent-greet-now");
+      if (greetBtn) greetBtn.hidden = call.greeted || !call.ready;
+      if (!call.ready) return;
+      // WhatsApp's call timer (checked on the 1 s callUiTimer tick): it
+      // starting means they answered, it going away means the call is over
+      const now = Date.now();
+      if (callTimerRunning(call)) {
+        call.timerSeenAt = now;
+        if (!call.greeted) greetCustomer(call, "call timer");
+      } else if (
+        call.greeted &&
+        call.timerSeenAt &&
+        now - call.timerSeenAt > 4000 &&
+        !s.onCall &&
+        !s.them
+      ) {
+        endAgentCall("Call ended.");
+      }
+    }
+
+    function onAgentEvent(e) {
+      if (!sidebar.isConnected) {
+        document.removeEventListener(AGENT_EVENT, onAgentEvent);
+        return;
+      }
+      let m;
+      try {
+        m = JSON.parse(e.detail);
+      } catch (_) {
+        return;
+      }
+      agentTapReady = true;
+      const call = agentCall;
+      if (m.type === "audio") {
+        if (call) onAgentAudio(call, m);
+        return;
+      }
+      if (m.type === "state") {
+        console.log("[WA] call agent: tap state →", m);
+        agentTapState = m;
+        // Armed but no call of ours (e.g. panel rebuilt): give you the line
+        // back if a call is on, otherwise release the mic
+        if (!call && m.onCall && !m.takenOver) sendAgentCommand("takeover");
+        else if (!call && !m.onCall) sendAgentCommand("disarm", { reason: "orphaned" });
+      } else if (m.type === "ended") {
+        agentTapState = { armed: false, onCall: false, speaking: false };
+        if (call) {
+          endAgentCall(
+            m.reason === "no-answer" ? "No answer — agent stopped."
+            : m.reason === "call-ended" ? "Call ended."
+            : "Agent stopped.",
+            { tapEnded: true },
+          );
+        }
+      } else if (m.type === "error") {
+        if (call) endAgentCall(m.error);
+      }
+      renderCallUi();
+    }
+
+    function endAgentCall(message, { tapEnded = false } = {}) {
+      const call = agentCall;
+      if (!call) return;
+      agentCall = null;
+      try {
+        call.port?.postMessage({ type: "stop" });
+        call.port?.disconnect();
+      } catch (_) {}
+      if (!tapEnded) {
+        // Mid-call: hand the line to your real mic instead of cutting it
+        if (agentTapState.onCall) sendAgentCommand("takeover");
+        else sendAgentCommand("disarm", { reason: "stopped" });
+      }
+      if (call.greeted && !call.outcome) {
+        saveAgentResult({ at: Date.now(), chatName: call.chatName, outcome: "no_result", notes: "" });
+      }
+      const result = call.outcome ? ` Result: ${AGENT_OUTCOME_LABELS[call.outcome.outcome]}.` : "";
+      setCallStatus(`${message}${result}`);
+      renderCallUi();
+    }
+
+    sidebar.querySelector("#wa-agent-greet-now").addEventListener("click", () => {
+      if (agentCall) greetCustomer(agentCall, "button");
+    });
+    sidebar.querySelector("#wa-agent-takeover").addEventListener("click", () => {
+      if (!agentCall) return;
+      sendAgentCommand(agentTapState.onCall ? "takeover" : "disarm", { reason: "stopped" });
+      endAgentCall("You're on the call now — agent stopped.", { tapEnded: true });
+    });
+    sidebar.querySelector("#wa-agent-enabled").addEventListener("change", renderCallUi);
+
+    const agentSettingsForm = sidebar.querySelector("#wa-agent-settings-form");
+    const agentSettingsStatus = sidebar.querySelector("#wa-agent-settings-status");
+
+    // The sidebar is part of WhatsApp's page, so saved keys are never put
+    // back into their fields (page scripts could read them); empty keeps the old one.
+    function fillAgentSettingsForm(st) {
+      AGENT_TEXT_FIELDS.forEach((k) => {
+        const input = agentSettingsForm.elements[k];
+        if (input) input.value = st[k] || "";
+      });
+      AGENT_KEY_FIELDS.forEach((k) => {
+        const input = agentSettingsForm.elements[k];
+        input.value = "";
+        input.placeholder = st[k] ? "Saved — paste a new key to replace it" : "";
+      });
+    }
+
+    async function saveAgentSettingsForm() {
+      const current = await loadAgentSettings();
+      const out = {};
+      [...AGENT_KEY_FIELDS, ...AGENT_TEXT_FIELDS].forEach((k) => {
+        out[k] = String(agentSettingsForm.elements[k]?.value || "").trim();
+      });
+      AGENT_KEY_FIELDS.forEach((k) => {
+        if (!out[k]) out[k] = current[k];
+      });
+      try {
+        await chrome.storage.local.set({ [AGENT_SETTINGS_KEY]: out });
+        fillAgentSettingsForm(out);
+        agentSettingsStatus.textContent = "Saved.";
+      } catch (_) {
+        agentSettingsStatus.textContent = "Couldn't save — refresh this tab and try again.";
+      }
+    }
+
+    loadAgentSettings().then(fillAgentSettingsForm);
+    loadAgentResults().then(renderAgentResults);
+    agentSettingsForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      saveAgentSettingsForm();
+    });
+    sidebar
+      .querySelector("#wa-agent-settings-reset")
+      .addEventListener("click", () => {
+        agentSettingsForm.elements.greeting.value = AGENT_DEFAULT_GREETING;
+        agentSettingsForm.elements.instructions.value = AGENT_DEFAULT_INSTRUCTIONS;
+        saveAgentSettingsForm();
+      });
+    document.addEventListener(AGENT_EVENT, onAgentEvent);
+    sendAgentCommand("ping");
+
     sidebar.querySelector("#wa-call-btn").addEventListener("click", () => {
-      startVoiceCall().catch((err) => {
-        setCallStatus(`Call failed: ${err.message || "unknown error"}`);
+      const withAgent = !!sidebar.querySelector("#wa-agent-enabled")?.checked;
+      (withAgent ? startAgentCall() : startVoiceCall()).catch((err) => {
+        if (withAgent) endAgentCall(`Agent call failed: ${err.message || "unknown error"}`);
+        else setCallStatus(`Call failed: ${err.message || "unknown error"}`);
       });
     });
     sidebar.querySelector("#wa-record-btn").addEventListener("click", () => {

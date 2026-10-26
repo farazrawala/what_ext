@@ -341,6 +341,141 @@ input::placeholder {
   line-height: 1.35;
 }
 
+/* AI call agent */
+.wa-sidebar-content .wa-agent-toggle {
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.wa-sidebar-content textarea.wa-agent-order {
+  height: 64px;
+  min-height: 64px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.wa-sidebar-content .wa-agent-takeover {
+  margin-top: 8px;
+  padding: 8px;
+  font-size: 14px;
+  background: #fff;
+  color: #075e54;
+  border: 1px solid #075e54;
+}
+
+.wa-sidebar-content .wa-agent-takeover:hover {
+  background: #f0f2f5;
+}
+
+.wa-agent-monitor {
+  margin-top: 8px;
+}
+
+.wa-agent-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 12px;
+  color: #8a6d00;
+}
+
+.wa-agent-chk.is-ok {
+  color: #0f7a3d;
+}
+
+.wa-agent-meter {
+  height: 6px;
+  margin-top: 6px;
+  border-radius: 3px;
+  background: #eef2f6;
+  overflow: hidden;
+}
+
+#wa-agent-meter-bar {
+  width: 0;
+  height: 100%;
+  background: #25d366;
+  transition: width 0.1s linear;
+}
+
+.wa-agent-transcript:empty::before {
+  content: "Live transcript — what you and the agent say shows here.";
+  color: #888;
+}
+
+.wa-agent-transcript {
+  margin-top: 8px;
+  padding: 8px;
+  max-height: 140px;
+  overflow-y: auto;
+  border-radius: 6px;
+  background: #f7f8fa;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.wa-agent-line + .wa-agent-line {
+  margin-top: 4px;
+}
+
+.wa-agent-line.is-agent {
+  color: #075e54;
+}
+
+.wa-agent-results {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  font-size: 12px;
+}
+
+.wa-agent-result {
+  padding: 6px 0;
+  border-top: 1px solid #eee;
+}
+
+.wa-agent-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #eef2f6;
+  color: #445;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.wa-agent-result.is-confirmed .wa-agent-badge {
+  background: rgba(37, 211, 102, 0.15);
+  color: #0f7a3d;
+}
+
+.wa-agent-result.is-cancelled .wa-agent-badge,
+.wa-agent-result.is-wrong_number .wa-agent-badge {
+  background: rgba(231, 76, 60, 0.12);
+  color: #b03a2e;
+}
+
+.wa-agent-result.is-change_requested .wa-agent-badge,
+.wa-agent-result.is-call_back_later .wa-agent-badge {
+  background: rgba(245, 184, 46, 0.18);
+  color: #7a5800;
+}
+
+.wa-agent-notes {
+  margin-top: 2px;
+  color: #555;
+}
+
+.wa-agent-settings {
+  margin-top: 20px;
+  padding-top: 14px;
+  border-top: 1px solid #e0e0e0;
+}
+
+.wa-sidebar-content textarea.wa-agent-instructions {
+  height: 180px;
+}
+
 .wa-sidebar-content .wa-stop-btn,
 #wa-stop-whatsapp-chat.wa-stop-btn {
   width: 100%;

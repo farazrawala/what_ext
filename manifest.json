@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Store Sync POS Messenger for WhatsApp Web",
-  "version": "1.112",
+  "version": "1.117",
   "description": "Sends customer messages queued in your Store Sync POS via WhatsApp Web and saves replies to the POS. Not affiliated with WhatsApp.",
   "icons": {
     "16": "icons/icon16.png",
@@ -12,6 +12,7 @@
   "permissions": ["scripting", "cookies", "storage"],
   "host_permissions": [
     "https://web.whatsapp.com/*",
+    "https://api.x.ai/*",
     "https://testv3.websitedemolynk.com/*",
     "http://localhost:8000/*",
     "http://127.0.0.1:8000/*",

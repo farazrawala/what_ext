@@ -314,25 +314,6 @@ input::placeholder {
   font-size: 15px;
 }
 
-.wa-sidebar-content #wa-record-btn {
-  background: #fff;
-  color: #c0392b;
-  border: 1px solid #e74c3c;
-}
-
-.wa-sidebar-content #wa-record-btn:hover {
-  background: #fdecea;
-}
-
-.wa-sidebar-content #wa-record-btn.is-recording {
-  background: #e74c3c;
-  color: #fff;
-}
-
-.wa-sidebar-content #wa-record-btn.is-recording:hover {
-  background: #c0392b;
-}
-
 .wa-call-status {
   min-height: 16px;
   margin-top: 8px;

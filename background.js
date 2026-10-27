@@ -6,16 +6,31 @@ if (self.WA_ENV && self.WA_ENV.localSocket) {
   importScripts("localSocket.js");
 }
 
+const BLOCKED_API_URL =
+  "Blocked: that URL is not this extension's Store Sync POS chat API";
+
 async function attachPosAuthHeaders(url, headers) {
+  if (typeof isAllowedPosApiUrl === "function" && !isAllowedPosApiUrl(url)) {
+    throw new Error(BLOCKED_API_URL);
+  }
   const auth = await readPosAuth(url);
   const next = { ...headers };
-  if (auth.token) {
+  const sameOrigin =
+    auth.origin &&
+    typeof normalizeApiOrigin === "function" &&
+    normalizeApiOrigin(auth.origin) === normalizeApiOrigin(url);
+  if (auth.token && sameOrigin) {
     next.Authorization = `Bearer ${auth.token}`;
   }
   return next;
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+function safeApiUrl(url) {
+  return typeof redactSensitiveUrl === "function" ? redactSensitiveUrl(url) : "";
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!sender || sender.id !== chrome.runtime.id) return false;
   if (message?.type === "wa-pos-auth-sync") {
     (async () => {
       const auth = message.auth || {};
@@ -66,14 +81,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       const template =
         message.receiveUrlTemplate ||
         `${resolveChatApiBase(auth.origin || defaultOrigin)}/create/:token`;
+      if (typeof isAllowedPosApiUrl === "function" && !isAllowedPosApiUrl(template)) {
+        sendResponse({ ok: false, error: BLOCKED_API_URL });
+        return;
+      }
       const url = buildReceivePostUrl(template, auth.token);
-      if (!url) {
+      if (!url || (typeof isAllowedPosApiUrl === "function" && !isAllowedPosApiUrl(url))) {
         sendResponse({ ok: false, error: "Invalid chat API URL" });
         return;
       }
 
       const body = buildChatCreateBody(message.payload || {});
-      console.log("[WA] POST /api/chat/create", { url, payload: body });
+      console.log("[WA] POST /api/chat/create", {
+        url: safeApiUrl(url),
+        messageId: body.message_id || "",
+        chars: String(body.message || "").length,
+      });
 
       try {
         const headers = await attachPosAuthHeaders(url, {
@@ -104,15 +127,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             ok: false,
             status: res.status,
             error: errorInfo.summary,
-            url,
+            url: safeApiUrl(url),
             data,
-            body,
             errorInfo,
           });
           return;
         }
 
-        sendResponse({ ok: true, status: res.status, data, url, body });
+        sendResponse({
+          ok: true,
+          status: res.status,
+          data,
+          url: safeApiUrl(url),
+        });
       } catch (err) {
         const errorInfo = formatApiErrorInfo({
           error: err.message || "Network error",
@@ -178,7 +205,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         options.body = JSON.stringify(body);
       }
 
-      console.log("[WA] API request →", method, url);
+      console.log("[WA] API request →", method, safeApiUrl(url));
       const res = await fetch(url, options);
       const text = await res.text();
       let data = null;
@@ -200,12 +227,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             "API returned HTML instead of JSON — check chat API base URL (live uses /pos_admin/api/chat)",
           url,
         });
-        console.warn("[WA] API returned non-JSON/HTML →", { method, url, status: res.status });
+        console.warn("[WA] API returned non-JSON/HTML →", {
+          method,
+          url: safeApiUrl(url),
+          status: res.status,
+        });
         sendResponse({
           ok: false,
           status: res.status,
           error: errorInfo.summary,
-          url,
+          url: safeApiUrl(url),
           data,
           errorInfo,
         });
@@ -221,16 +252,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         });
         console.warn("[WA] API request failed →", {
           method,
-          url,
+          url: safeApiUrl(url),
           status: res.status,
           received_id: data?.received_id ?? data?.receivedId,
-          data,
         });
         sendResponse({
           ok: false,
           status: res.status,
           error: errorInfo.summary,
-          url,
+          url: safeApiUrl(url),
           data,
           errorInfo,
         });
@@ -239,7 +269,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
       console.log("[WA] API response ←", {
         method,
-        url,
+        url: safeApiUrl(url),
         status: res.status,
         success: data?.success,
         dataKeys:
@@ -248,7 +278,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           : data && typeof data === "object" ?
             Object.keys(data)
           : [],
-        data,
       });
       sendResponse({ ok: true, status: res.status, data });
     } catch (err) {

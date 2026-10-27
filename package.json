@@ -7,7 +7,8 @@
     "build": "node scripts/build-extension.js --env=live",
     "build:local": "node scripts/build-extension.js --env=local",
     "build:live": "node scripts/build-extension.js --env=live",
-    "build:all": "node scripts/build-extension.js --env=local && node scripts/build-extension.js --env=live --no-bump"
+    "build:all": "node scripts/build-extension.js --env=local && node scripts/build-extension.js --env=live --no-bump",
+    "test": "node --test tests/api-allowlist.test.js"
   },
   "dependencies": {
     "express": "^5.1.0",

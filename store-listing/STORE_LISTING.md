@@ -26,6 +26,8 @@ WHAT IT DOES
 • Uses your POS sign-in: keep your Store Sync POS open and signed in; the extension uses that session, so there is nothing extra to log in to.
 • Paced sending: messages go out one at a time with a short pause between each.
 • Reply settings: on the Settings tab, choose how often replies are checked and how far back to read, or turn reply reading off.
+• Optional voice call: from an open chat, place a WhatsApp voice call.
+• Optional AI call agent: turn it on and save your own Google Gemini or xAI API key if you want the agent to speak on that call. Call audio is sent only to the provider you chose.
 
 HOW TO USE
 1. Sign in to your Store Sync POS in Chrome.
@@ -37,7 +39,7 @@ WHO IT IS FOR
 Businesses that use Store Sync POS and want to message their own customers from WhatsApp Web. A Store Sync POS account is required.
 
 PRIVACY
-Message data goes only to your Store Sync POS server. Nothing is sold, used for advertising, or shared with anyone else. The extension only runs on WhatsApp Web and your Store Sync POS site. Full policy: https://testv3.websitedemolynk.com/pos/privacy-policy.html
+Queued messages and saved replies go only to your Store Sync POS server. Nothing is sold or used for advertising. If you turn on the optional AI call agent, that call's audio is sent to Google Gemini or xAI using the API key you provide. Full policy: https://testv3.websitedemolynk.com/pos/privacy-policy.html
 
 Store Sync POS Messenger is not affiliated with, endorsed by, or sponsored by WhatsApp or Meta. WhatsApp is a trademark of WhatsApp LLC.
 ```
@@ -70,7 +72,7 @@ Lets a business that uses Store Sync POS message its customers through WhatsApp 
 
 `storage`
 ```text
-Stores the user's Store Sync POS sign-in (token, company ID and name) so the extension stays signed in, plus the extension's settings and the IDs of messages already saved, so the same reply is not saved twice. Kept only in the browser.
+Stores the user's Store Sync POS sign-in (token, company ID and name) so the extension stays signed in, plus the extension's settings, the IDs of messages already saved, and — only if the user turns on the AI call agent — the API key the user pastes in. Kept only in the browser.
 ```
 
 `scripting`
@@ -83,10 +85,12 @@ Shows the extension's sidebar on WhatsApp Web when the user clicks "Open WhatsAp
 Reads the Store Sync POS sign-in cookie on the Store Sync POS domain only, so the extension can call the POS API as the signed-in user. No other site's cookies are read.
 ```
 
-Host permissions (`https://web.whatsapp.com/*`, `https://testv3.websitedemolynk.com/*`)
+Host permissions (`https://web.whatsapp.com/*`, `https://testv3.websitedemolynk.com/*`, `https://api.x.ai/*`, `https://generativelanguage.googleapis.com/*`)
 ```text
-web.whatsapp.com: the extension's sidebar runs on WhatsApp Web to send the messages queued in the user's POS and to read new incoming replies.
+web.whatsapp.com: the extension's sidebar runs on WhatsApp Web to send the messages queued in the user's POS, to read new incoming replies, and to place an optional voice call the user starts.
 testv3.websitedemolynk.com: this is the Store Sync POS. The extension reads the user's POS sign-in there and calls the POS API to get queued messages, mark them sent, and save incoming replies.
+api.x.ai: used only if the user turns on the AI call agent and selects xAI Grok. The extension exchanges that call's audio with xAI using the API key the user saved.
+generativelanguage.googleapis.com: used only if the user turns on the AI call agent and selects Google Gemini. The extension exchanges that call's audio with Gemini using the API key the user saved.
 ```
 
 **Remote code:** No, I am not using remote code.
@@ -100,7 +104,7 @@ testv3.websitedemolynk.com: this is the Store Sync POS. The extension reads the 
 | Health information | ☐ | |
 | Financial and payment information | ☐ | |
 | Authentication information | ✅ | Store Sync POS sign-in token |
-| Personal communications | ✅ | Text of messages sent and received |
+| Personal communications | ✅ | Text of messages sent and received. If the user turns on the AI call agent, audio from that call is sent to the provider they chose |
 | Location | ☐ | |
 | Web history | ☐ | |
 | User activity | ☐ | |

@@ -1,25 +1,18 @@
 // Runs in the page itself (MAIN world) from document_start, so it sees call
 // audio as WhatsApp creates it: your mic from getUserMedia, the other person
 // from RTCPeerConnection / <audio>.srcObject, and anything played through
-// Web Audio. Two features build on that, both idle until the sidebar asks:
-// - Recording: mixes both voices (no screen, no share prompt) and downloads an
-//   .mp3 (vendor/lame.min.js, loaded into this world by the manifest).
-// - AI call agent: while armed, WhatsApp's mic is swapped for a virtual one
-//   that carries the agent's voice (your real mic stays muted until you take
-//   over), and the other person's voice is streamed out as 24 kHz PCM.
-// The sidebar (content.js) talks to it with CustomEvents whose detail is a
-// JSON string; it relays the agent audio to Grok via the background script.
+// Web Audio. Idle until the sidebar arms the AI call agent. While armed,
+// WhatsApp's mic is swapped for a virtual one that carries the agent's voice
+// (your real mic stays muted until you take over), and the other person's
+// voice is streamed out as 24 kHz PCM. The sidebar (content.js) talks to it
+// with CustomEvents whose detail is a JSON string; it relays the agent audio
+// to the provider via the background script. Call recording is not included.
 (() => {
   if (window.__waCallTap) return;
   window.__waCallTap = true;
 
-  const CMD_EVENT = "wa-ext:call-rec-cmd";
-  const STATE_EVENT = "wa-ext:call-rec-state";
   const AGENT_CMD_EVENT = "wa-ext:agent-cmd";
   const AGENT_EVENT = "wa-ext:agent-evt";
-  // 24 kHz mono: clear voices, ~360 KB per minute as MP3
-  const OUTPUT_SAMPLE_RATE = 24000;
-  const MP3_KBPS = 48;
   // Grok realtime audio: 16-bit PCM, 24 kHz, sent in 100 ms chunks
   const AGENT_SAMPLE_RATE = 24000;
   const AGENT_CHUNK_SAMPLES = 2400;
@@ -31,12 +24,10 @@
   const micTracks = new Set();
   const remoteTracks = new Set();
   const playingNodes = new Set(); // WeakRef<AudioNode> wired to the speakers
-  // Each bus mixes the call's live sources into one AudioContext: the recorder
-  // listens to you + them, the agent's ears to them only.
+  // Each bus mixes the call's live sources into one AudioContext.
+  // The agent's ears listen to the other person (and page audio if no call track).
   const buses = new Set();
-  let rec = null;
   let agent = null;
-  let lastStateJson = "";
 
   const origConnect = window.AudioNode?.prototype.connect;
   const origDisconnect = window.AudioNode?.prototype.disconnect;
@@ -66,7 +57,7 @@
 
   // WhatsApp may take the mic in another frame and only hand it to Web Audio
   // or WebRTC here, so each of those entry points swaps in the agent's voice
-  // while armed. Elsewhere it just notes the mic for recording.
+  // while armed. Elsewhere it only notes the mic so a later arm can use it.
   const loggedMicPaths = new Set();
   function swapMicStream(stream, via) {
     const tracks = stream?.getAudioTracks?.() || [];
@@ -99,7 +90,7 @@
     buses.forEach((bus) => busConnectTrack(bus, track, kind));
   }
 
-  // ---- Hooks (passive until a recording or agent call starts) ----
+  // ---- Hooks (passive until an agent call starts) ----
 
   const mediaDevicesProto = window.MediaDevices?.prototype;
   if (mediaDevicesProto?.getUserMedia) {
@@ -319,230 +310,6 @@
     // The same voice can arrive twice (track + Web Audio) — prefer the track
     if (bus.gains.web) bus.gains.web.gain.value = them ? 0 : 1;
     return { you, them };
-  }
-
-  // ---- Recording ----
-
-  function getState(extra = {}) {
-    return {
-      recording: !!rec,
-      startedAt: rec?.startedAt || 0,
-      you: rec ? busCountLive(rec.bus, "you") > 0 : false,
-      them: rec ? busCountLive(rec.bus, "them") > 0 : false,
-      // Page audio is tapped too (may be their voice, may be just sounds)
-      webAudio: rec ? rec.bus.tees.size > 0 : false,
-      ...extra,
-    };
-  }
-
-  function emitState(extra) {
-    const json = JSON.stringify(getState(extra));
-    lastStateJson = json;
-    document.dispatchEvent(new CustomEvent(STATE_EVENT, { detail: json }));
-  }
-
-  function tick() {
-    if (!rec) return;
-    const { you, them } = busTick(rec.bus);
-    if (you || them) {
-      rec.hadCall = true;
-      rec.quietSince = 0;
-    } else if (rec.hadCall) {
-      rec.quietSince = rec.quietSince || Date.now();
-      if (Date.now() - rec.quietSince >= CALL_END_GRACE_MS) {
-        stopRecording("call-ended");
-        return;
-      }
-    }
-    if (JSON.stringify(getState()) !== lastStateJson) emitState();
-  }
-
-  function startRecording(chatName) {
-    if (rec) {
-      emitState();
-      return;
-    }
-    if (!window.MediaRecorder || !origConnect) {
-      emitState({ error: "This browser can't record audio here." });
-      return;
-    }
-    const ctx = new AudioContext();
-    const out = ctx.createMediaStreamDestination();
-    out.channelCount = 1;
-    const mimeType =
-      ["audio/webm;codecs=opus", "audio/webm"].find((t) =>
-        MediaRecorder.isTypeSupported(t),
-      ) || "";
-    const recorder = new MediaRecorder(out.stream, {
-      ...(mimeType ? { mimeType } : {}),
-      audioBitsPerSecond: 64000,
-    });
-    const chunks = [];
-    const r = {
-      ctx,
-      bus: null,
-      recorder,
-      chatName,
-      startedAt: Date.now(),
-      stoppedAt: 0,
-      reason: "",
-      hadCall: false,
-      quietSince: 0,
-      timer: null,
-    };
-    recorder.ondataavailable = (e) => {
-      if (e.data?.size) chunks.push(e.data);
-    };
-    recorder.onstop = () => {
-      saveRecording(r, chunks, recorder.mimeType || mimeType).catch((err) => {
-        console.warn("[WA] call tap: save failed →", err);
-        emitState({ error: `Saving failed: ${err.message || "unknown error"}` });
-      });
-    };
-    rec = r;
-    r.bus = createBus(ctx, ["you", "them", "web"]);
-    Object.values(r.bus.gains).forEach((g) => origConnect.call(g, out));
-
-    recorder.start(1000);
-    ctx.resume().catch(() => {});
-    r.timer = setInterval(tick, 1000);
-    emitState();
-  }
-
-  function stopRecording(reason) {
-    const r = rec;
-    if (!r) return;
-    rec = null;
-    clearInterval(r.timer);
-    r.reason = reason;
-    r.stoppedAt = Date.now();
-    closeBus(r.bus);
-    if (r.recorder.state !== "inactive") r.recorder.stop();
-    emitState({ saving: true });
-  }
-
-  async function saveRecording(r, chunks, mimeType) {
-    r.ctx.close().catch(() => {});
-    const raw = new Blob(chunks, { type: mimeType || "audio/webm" });
-    if (!raw.size) {
-      emitState({ error: "Nothing was recorded." });
-      return;
-    }
-    // MP3 first; WAV, then the raw recording, so a recording is never lost
-    let blob = raw;
-    let ext = "webm";
-    try {
-      const pcm = await decodeToMonoPcm(raw);
-      try {
-        blob = await encodeMp3(pcm);
-        ext = "mp3";
-      } catch (err) {
-        console.warn("[WA] call tap: MP3 encode failed, saving WAV →", err);
-        blob = encodeWav(pcm);
-        ext = "wav";
-      }
-    } catch (err) {
-      console.warn("[WA] call tap: decode failed, saving original →", err);
-    }
-    const filename = buildFilename(r.chatName, r.startedAt, ext);
-    download(blob, filename);
-    emitState({
-      saved: {
-        filename,
-        ms: r.stoppedAt - r.startedAt,
-        callEnded: r.reason === "call-ended",
-      },
-    });
-  }
-
-  // Recorded webm/opus → 16-bit mono samples at OUTPUT_SAMPLE_RATE
-  async function decodeToMonoPcm(blob) {
-    const decoder = new OfflineAudioContext(1, 1, OUTPUT_SAMPLE_RATE);
-    const audio = await decoder.decodeAudioData(await blob.arrayBuffer());
-    const n = audio.length;
-    const channels = audio.numberOfChannels;
-    const samples = new Int16Array(n);
-    const data = [];
-    for (let c = 0; c < channels; c++) data.push(audio.getChannelData(c));
-    for (let i = 0; i < n; i++) {
-      let s = 0;
-      for (let c = 0; c < channels; c++) s += data[c][i];
-      s = Math.max(-1, Math.min(1, s / channels));
-      samples[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-    }
-    return { samples, rate: audio.sampleRate };
-  }
-
-  // Encodes in slices and yields between them so WhatsApp stays responsive
-  async function encodeMp3({ samples, rate }) {
-    const lame = window.lamejs;
-    if (!lame?.Mp3Encoder) throw new Error("MP3 encoder not loaded");
-    const encoder = new lame.Mp3Encoder(1, rate, MP3_KBPS);
-    const SLICE = 1152 * 20;
-    const parts = [];
-    let sliceStart = performance.now();
-    for (let i = 0; i < samples.length; i += SLICE) {
-      const out = encoder.encodeBuffer(samples.subarray(i, i + SLICE));
-      if (out.length) parts.push(out);
-      if (performance.now() - sliceStart > 30) {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        sliceStart = performance.now();
-      }
-    }
-    const tail = encoder.flush();
-    if (tail.length) parts.push(tail);
-    return new Blob(parts, { type: "audio/mpeg" });
-  }
-
-  // Fallback: plain 16-bit PCM WAV
-  function encodeWav({ samples, rate }) {
-    const n = samples.length;
-    const view = new DataView(new ArrayBuffer(44 + n * 2));
-    const writeAscii = (offset, text) => {
-      for (let i = 0; i < text.length; i++) {
-        view.setUint8(offset + i, text.charCodeAt(i));
-      }
-    };
-    writeAscii(0, "RIFF");
-    view.setUint32(4, 36 + n * 2, true);
-    writeAscii(8, "WAVE");
-    writeAscii(12, "fmt ");
-    view.setUint32(16, 16, true); // fmt chunk size
-    view.setUint16(20, 1, true); // PCM
-    view.setUint16(22, 1, true); // mono
-    view.setUint32(24, rate, true);
-    view.setUint32(28, rate * 2, true); // byte rate
-    view.setUint16(32, 2, true); // block align
-    view.setUint16(34, 16, true); // bits per sample
-    writeAscii(36, "data");
-    view.setUint32(40, n * 2, true);
-    for (let i = 0; i < n; i++) view.setInt16(44 + i * 2, samples[i], true);
-    return new Blob([view.buffer], { type: "audio/wav" });
-  }
-
-  function buildFilename(chatName, startedAt, ext) {
-    const d = new Date(startedAt);
-    const pad = (n) => String(n).padStart(2, "0");
-    const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`;
-    const name =
-      String(chatName || "")
-        .replace(/[\\/:*?"<>|]+/g, "")
-        .trim()
-        .replace(/\s+/g, "-")
-        .slice(0, 60) || "whatsapp";
-    return `call-${name}-${stamp}.${ext}`;
-  }
-
-  function download(blob, filename) {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    a.style.display = "none";
-    (document.body || document.documentElement).appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
   }
 
   // ---- AI call agent ----
@@ -827,13 +594,6 @@
     }
   }
 
-  document.addEventListener(CMD_EVENT, (e) => {
-    const msg = parseDetail(e);
-    if (msg?.cmd === "start") startRecording(String(msg.chatName || ""));
-    else if (msg?.cmd === "stop") stopRecording("stopped");
-    else if (msg?.cmd === "ping") emitState();
-  });
-
   document.addEventListener(AGENT_CMD_EVENT, (e) => {
     const msg = parseDetail(e);
     if (msg?.cmd === "arm") armAgent();
@@ -848,8 +608,8 @@
     }
   });
 
-  // A refresh would lose the recording — ask first
+  // A refresh would drop the agent call — ask first
   window.addEventListener("beforeunload", (e) => {
-    if (rec || agent) e.preventDefault();
+    if (agent) e.preventDefault();
   });
 })();

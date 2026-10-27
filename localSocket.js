@@ -38,17 +38,7 @@ function connectWebSocket() {
             for (const tab of tabs) {
               chrome.tabs
                 .sendMessage(tab.id, { type: "wa-start-sending" })
-                .catch(() => {
-                  chrome.scripting.executeScript({
-                    target: { tabId: tab.id },
-                    func: () => {
-                      window.postMessage(
-                        { type: "wa-start-sending-from-socket" },
-                        "*",
-                      );
-                    },
-                  });
-                });
+                .catch(() => {});
             }
           });
         }

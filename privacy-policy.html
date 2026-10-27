@@ -63,13 +63,15 @@
 <body>
 <main>
   <h1>Privacy Policy</h1>
-  <p class="meta">Store Sync POS Messenger for WhatsApp Web (browser extension)<br>Effective date: 16 October 2026</p>
+  <p class="meta">Store Sync POS Messenger for WhatsApp Web (browser extension)<br>Effective date: 26 October 2026</p>
 
   <div class="note">
     <strong>In short:</strong> the extension connects your Store Sync POS account to WhatsApp Web in your browser.
     It sends the customer messages your POS has queued, and it copies incoming customer messages back into your POS.
-    The data goes only to your Store Sync POS server. We do not sell it, use it for advertising, or share it with
-    anyone else. Store Sync POS Messenger is not affiliated with, endorsed by, or sponsored by WhatsApp or Meta.
+    Queued messages and saved replies go to your Store Sync POS server. We do not sell that data, use it for
+    advertising, or share it for purposes unrelated to the extension. If you turn on the optional AI call agent and
+    save your own API key, call audio for that call is also sent to the provider you chose (Google Gemini or xAI).
+    Store Sync POS Messenger is not affiliated with, endorsed by, or sponsored by WhatsApp or Meta.
   </div>
 
   <h2>1. Who we are</h2>
@@ -92,6 +94,10 @@
       extension opens it, which marks those messages as read in WhatsApp. The extension skips messages you sent yourself.</li>
     <li><strong>Sign-in:</strong> it reads your Store Sync POS sign-in from the POS website that is open in your browser,
       so you do not have to sign in again inside the extension.</li>
+    <li><strong>Voice call (optional):</strong> from an open chat you can place a WhatsApp voice call.</li>
+    <li><strong>AI call agent (optional):</strong> if you turn it on and save your own Google Gemini or xAI API key,
+      the agent can speak on that call. The microphone audio and the other person's voice from that call are sent to
+      the provider you chose, so it can talk and transcribe. The key stays in the extension's local storage.</li>
   </ul>
 
   <h2>3. Data the extension handles</h2>
@@ -125,27 +131,40 @@
         <td>To remember your settings and avoid saving the same message twice</td>
         <td>Kept only in your browser (extension storage and WhatsApp Web's local storage)</td>
       </tr>
+      <tr>
+        <td>AI call audio, transcript, and the result the agent records (for example confirmed or cancelled). Your Gemini or xAI API key.</td>
+        <td>The call, and the key you paste into Settings</td>
+        <td>Only when you turn the AI call agent on, so that provider can speak and transcribe</td>
+        <td>The key stays in extension storage in your browser. Audio and transcript go to Google Gemini or xAI, whichever you selected. The call result is kept in extension storage</td>
+      </tr>
     </tbody>
   </table>
   </div>
   <p>
     The extension does not collect browsing history, read other websites, track you, show ads, or include analytics.
-    It reads message <em>text</em> only. It does not read your contacts list, and it does not read or upload photos,
-    voice notes, files, or WhatsApp call data.
+    It does not read your contacts list, and it does not upload photos, voice notes, or files from chats.
+    Call audio is used only when you turn on the AI call agent.
   </p>
 
   <h2>4. Websites the extension accesses</h2>
   <ul>
-    <li><code>https://web.whatsapp.com</code>, to send and read messages as described above.</li>
+    <li><code>https://web.whatsapp.com</code>, to send and read messages, and for the optional voice call.</li>
     <li>Your Store Sync POS website and its API, to read your sign-in and to exchange messages with your POS.</li>
+    <li><code>https://generativelanguage.googleapis.com</code>, only while the AI call agent is on and the provider is Google Gemini.</li>
+    <li><code>https://api.x.ai</code>, only while the AI call agent is on and the provider is xAI Grok.</li>
   </ul>
-  <p>Data is sent over HTTPS to your Store Sync POS server and nowhere else.</p>
+  <p>
+    Queued messages and saved replies are sent over HTTPS to your Store Sync POS server.
+    Call audio for the AI agent is sent only to the provider you selected, and only after you save that provider's API key.
+  </p>
 
   <h2>5. Sharing</h2>
   <p>
     We do not sell, rent, or trade any data handled by the extension. We do not share it with third parties, except
-    with service providers who host the Store Sync POS for us, or when the law requires it. Messages you send are
-    delivered by WhatsApp under WhatsApp's own terms and privacy policy.
+    with service providers who host the Store Sync POS for us, with Google or xAI when you turn on the AI call agent
+    and choose that provider, or when the law requires it. Messages you send are delivered by WhatsApp under
+    WhatsApp's own terms and privacy policy. Google and xAI process the call audio under their own terms, using the
+    API key you supply.
   </p>
 
   <h2>6. Chrome Web Store Limited Use</h2>
@@ -175,9 +194,9 @@
 
   <h2>9. Security</h2>
   <p>
-    Data is sent over encrypted HTTPS connections, and only to your Store Sync POS server. Requests are authenticated
-    with your POS sign-in token. No method of storage or transmission is completely secure, but we take reasonable
-    steps to protect your data.
+    POS requests are sent over encrypted HTTPS and authenticated with your POS sign-in token. AI call audio, when you
+    enable it, is sent over encrypted connections to the provider you chose. No method of storage or transmission is
+    completely secure, but we take reasonable steps to protect your data.
   </p>
 
   <h2>10. Children</h2>

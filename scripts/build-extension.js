@@ -46,8 +46,6 @@ const CSS_FILES = ["sidebar.css"];
 const HTML_FILES = ["popup.html"];
 /** Copied as-is (manifest "icons" / action "default_icon"). */
 const ICON_DIR = "icons";
-/** Third-party libraries + their licenses, copied as-is (already minified). */
-const VENDOR_DIR = "vendor";
 
 function parseEnvArg() {
   const arg = process.argv.find((a) => a.startsWith("--env="));
@@ -198,6 +196,7 @@ async function minifyJs(code, filename) {
   const result = await minify(code, {
     compress: {
       drop_console: false,
+      pure_funcs: ["console.log", "console.debug", "console.info"],
       passes: 2,
     },
     mangle: {
@@ -260,7 +259,6 @@ function obfuscateJs(code, filename) {
       "wa-toggle-sidebar",
       "wa-show-sidebar",
       "wa-start-sending",
-      "wa-start-sending-from-socket",
       "start-sending",
     ],
   });
@@ -324,21 +322,19 @@ function buildManifest(destDir, version, env) {
   const posMatches = [env, ...Object.values(env.alternates || {})].flatMap((e) =>
     Array.isArray(e.posTabMatch) ? e.posTabMatch : [],
   );
-  // api.x.ai: Grok session tokens for the AI call agent (background.js)
-  base.host_permissions = ["https://web.whatsapp.com/*", "https://api.x.ai/*", ...posMatches];
+  // api.x.ai and generativelanguage: optional AI call agent (user's own key).
+  base.host_permissions = [
+    "https://web.whatsapp.com/*",
+    "https://api.x.ai/*",
+    "https://generativelanguage.googleapis.com/*",
+    ...posMatches,
+  ];
   base.content_scripts = [
     {
-      // Page-world audio tap for call recording — must load before WhatsApp
+      // Page-world audio tap for the AI call agent — must load before WhatsApp
       matches: ["https://web.whatsapp.com/*"],
       js: ["callTap.js"],
       run_at: "document_start",
-      world: "MAIN",
-    },
-    {
-      // MP3 encoder for call recordings; only needed when saving
-      matches: ["https://web.whatsapp.com/*"],
-      js: ["vendor/lame.min.js"],
-      run_at: "document_idle",
       world: "MAIN",
     },
     {
@@ -444,14 +440,6 @@ async function main() {
   });
   fs.readdirSync(path.join(destDir, ICON_DIR)).forEach((f) =>
     console.log(`  ${ICON_DIR}/${f}`),
-  );
-
-  console.log("Vendor (copied):");
-  fs.cpSync(path.join(ROOT, VENDOR_DIR), path.join(destDir, VENDOR_DIR), {
-    recursive: true,
-  });
-  fs.readdirSync(path.join(destDir, VENDOR_DIR)).forEach((f) =>
-    console.log(`  ${VENDOR_DIR}/${f}`),
   );
 
   console.log("JSON (minified + env matches):");

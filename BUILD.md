@@ -52,8 +52,7 @@ Every package file is processed:
 |------|-----------|
 | `env.js` | Minified only (chosen env) |
 | `content.js` | Minified (+ obfuscated in local builds only) |
-| `callTap.js` | Minified (+ obfuscated in local builds only); page-world call-audio tap |
-| `vendor/` | Copied as-is: `lame.min.js` (lamejs MP3 encoder, LGPL-3.0) + `LAME-LICENSE.txt` |
+| `callTap.js` | Minified (+ obfuscated in local builds only); page-world audio tap for the AI call agent |
 | `background.js` | Minified (+ obfuscated in local builds only) |
 | `posAuth.js` | Minified (+ obfuscated in local builds only) |
 | `popup.js` | Minified (+ obfuscated in local builds only) |

@@ -53,6 +53,79 @@ function preferredPosHosts() {
   );
 }
 
+/** Origins the active build is allowed to call (active env, base env, local alternates). */
+function collectAllowedPosOrigins() {
+  const origins = new Set();
+  const add = (env) => {
+    if (!env || typeof env !== 'object') return;
+    const hosts = Array.isArray(env.preferredHosts) ? env.preferredHosts : [];
+    hosts.forEach((host) => {
+      const origin = normalizeApiOrigin(host);
+      if (origin) origins.add(origin);
+    });
+    if (env.posOrigin) {
+      const origin = normalizeApiOrigin(env.posOrigin);
+      if (origin) origins.add(origin);
+    }
+  };
+  const base = getBaseWaEnv();
+  add(base);
+  add(getWaEnv());
+  if (base.alternates && typeof base.alternates === 'object') {
+    Object.values(base.alternates).forEach(add);
+  }
+  return origins;
+}
+
+/**
+ * True only for this build's POS chat API.
+ * Blocks the WhatsApp page from aiming the bearer token at another host.
+ */
+function isAllowedPosApiUrl(url) {
+  let parsed;
+  try {
+    parsed = new URL(String(url || ''));
+  } catch {
+    return false;
+  }
+  if (parsed.username || parsed.password) return false;
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false;
+  const origin = `${parsed.protocol}//${parsed.host}`;
+  if (!collectAllowedPosOrigins().has(origin)) return false;
+  const path = parsed.pathname || '';
+  return (
+    path === '/api/chat' ||
+    path.startsWith('/api/chat/') ||
+    path.includes('/api/chat/')
+  );
+}
+
+/** Strip tokens from a URL before it is logged or shown in the page DOM. */
+function redactSensitiveUrl(url) {
+  const raw = String(url || '');
+  if (!raw) return '';
+  const scrubPath = (pathname) =>
+    pathname
+      .replace(/(\/create\/)[^/]+/gi, '$1[token]')
+      .split('/')
+      .map((seg) => (seg.split('.').length === 3 && seg.length > 20 ? '[token]' : seg))
+      .join('/');
+  try {
+    const u = new URL(raw);
+    u.username = '';
+    u.password = '';
+    u.pathname = scrubPath(u.pathname);
+    for (const key of [...u.searchParams.keys()]) {
+      if (/token|key|secret|password/i.test(key)) u.searchParams.set(key, '[redacted]');
+    }
+    return u.toString();
+  } catch {
+    return raw
+      .replace(/(\/create\/)[^/?#\s]+/gi, '$1[token]')
+      .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[token]');
+  }
+}
+
 /** Paths to try when reading cookies for a host (Path=/pos cookies need /pos/). */
 const COOKIE_PATH_TRIES = ['/pos/', '/pos', '/'];
 
@@ -555,7 +628,7 @@ function extractApiErrorMessage(data) {
 
 function formatApiErrorInfo(response = {}) {
   const status = response.status;
-  const url = response.url || '';
+  const url = redactSensitiveUrl(response.url || '');
   const detail = extractApiErrorMessage(response.data) || response.error || '';
   const summary =
     [status ? `HTTP ${status}` : '', detail].filter(Boolean).join(' — ') ||
@@ -651,5 +724,7 @@ if (typeof self !== 'undefined' && typeof window === 'undefined') {
   self.preferredPosHosts = preferredPosHosts;
   self.posAuthCacheKey = posAuthCacheKey;
   self.isPosTabUrl = isPosTabUrl;
+  self.isAllowedPosApiUrl = isAllowedPosApiUrl;
+  self.redactSensitiveUrl = redactSensitiveUrl;
   self.POS_TOKEN_COOKIE = POS_TOKEN_COOKIE;
 }

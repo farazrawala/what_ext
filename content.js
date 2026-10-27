@@ -2312,7 +2312,6 @@
             <textarea id="wa-agent-order" class="wa-agent-order" placeholder="Order details for the agent (optional), e.g. Order #1234: 2 × LED bulb, Rs 1,500, cash on delivery" hidden></textarea>
             <div class="wa-call-actions">
               <button id="wa-call-btn" type="button">Voice call</button>
-              <button id="wa-record-btn" type="button">Record</button>
             </div>
             <div id="wa-agent-monitor" class="wa-agent-monitor" hidden>
               <div class="wa-agent-checks">
@@ -2324,7 +2323,7 @@
               <button id="wa-agent-greet-now" class="wa-agent-takeover" type="button" hidden>Customer answered — start agent</button>
             </div>
             <button id="wa-agent-takeover" class="wa-agent-takeover" type="button" hidden>Take over the call</button>
-            <div id="wa-call-status" class="wa-call-status">Record saves only the call's voices (you + them) as an .mp3 file.</div>
+            <div id="wa-call-status" class="wa-call-status">Places a voice call in the open chat.</div>
             <div id="wa-agent-transcript" class="wa-agent-transcript" hidden></div>
             <ul id="wa-agent-results" class="wa-agent-results"></ul>
           </div>
@@ -2870,8 +2869,8 @@
 
       li.innerHTML = `
         <div class="wa-received-meta">
-          <span class="wa-received-from" title="${fromLabel.replace(/"/g, "&quot;")}">${fromLabel}</span>
-          <span class="wa-received-time">${timeLabel}</span>
+          <span class="wa-received-from"></span>
+          <span class="wa-received-time"></span>
         </div>
         <div class="wa-received-text"></div>
         <div class="wa-received-posted"></div>
@@ -2880,6 +2879,10 @@
           <button type="button" class="wa-retry-now" hidden>Retry now</button>
         </div>
       `;
+      const fromEl = li.querySelector(".wa-received-from");
+      fromEl.textContent = fromLabel;
+      fromEl.title = fromLabel;
+      li.querySelector(".wa-received-time").textContent = timeLabel;
       li.querySelector(".wa-received-text").textContent = payload.text;
 
       const postedEl = li.querySelector(".wa-received-posted");
@@ -2943,7 +2946,10 @@
           message_id: payload.messageId || "",
           whatsapp_time: payload.receivedAt || payload.whatsapp_time || "",
         };
-        console.log("[WA] POST /api/chat/create payload →", apiBody);
+        console.log("[WA] POST /api/chat/create", {
+          messageId: apiBody.message_id || "",
+          chars: String(apiBody.message || "").length,
+        });
 
         if (checkExtensionContext()) {
           reject(new Error(EXTENSION_STALE_STATUS));
@@ -2969,9 +2975,8 @@
             if (!response?.ok) {
               console.warn("[WA] POST /api/chat/create error →", {
                 url: response?.url,
-                payload: response?.body || apiBody,
+                messageId: apiBody.message_id || "",
                 error: response?.error,
-                data: response?.data,
               });
               const err = new Error(
                 response?.errorInfo?.summary ||
@@ -2995,8 +3000,8 @@
             }
             console.log("[WA] POST /api/chat/create ok →", {
               url: response.url,
-              payload: response.body || apiBody,
-              data: response.data,
+              messageId: apiBody.message_id || "",
+              status: response.status,
             });
             resolve(response);
           },
@@ -4545,7 +4550,10 @@
         try {
           console.log("[WA] fetch-random request →", state.fetchUrl);
           payload = await apiRequest("GET", state.fetchUrl);
-          console.log("[WA] fetch-random response →", payload);
+          console.log("[WA] fetch-random response →", {
+            success: payload?.success,
+            id: extractChatDocumentId(payload?.data || {}),
+          });
         } catch (err) {
           console.warn("[WA] fetch-random error →", {
             url: state.fetchUrl,
@@ -4575,18 +4583,7 @@
               rawData && typeof rawData === "object" ?
                 Object.keys(rawData)
               : [],
-            rawData,
-            parsed: {
-              _id: extractChatDocumentId(rawData || {}),
-              message: rawData?.message || rawData?.text || rawData?.body || "",
-              number:
-                rawData?.number ||
-                rawData?.phone ||
-                rawData?.to_user_id ||
-                rawData?.toUserId ||
-                rawData?.recipient ||
-                "",
-            },
+            id: extractChatDocumentId(rawData || {}),
           });
           if (!isActive()) break;
           const readyToRetry = await countdownSeconds(
@@ -4602,18 +4599,20 @@
 
         console.log("[WA] fetch-random item →", {
           _id: item._id,
-          number: item.number,
-          messagePreview: String(item.message).slice(0, 80),
+          digits: String(item.number).replace(/\D/g, "").length,
         });
         state.currentId = item._id;
         state.currentNumber = item.number;
         state.currentMessage = item.message;
+        state.phase = "sending";
         saveQueue(state);
 
         const sent = await sendOneMessage(item.number, item.message);
         if (!isActive()) break;
 
         if (sent) {
+          state.phase = "sent";
+          saveQueue(state);
           try {
             setSendStatus("Updating message status...");
             const updateUrl = buildIdUrl(state.updateUrl, item._id);
@@ -4652,6 +4651,7 @@
         delete state.currentId;
         delete state.currentNumber;
         delete state.currentMessage;
+        delete state.phase;
         saveQueue(state);
 
         if (!isActive()) break;
@@ -4804,73 +4804,15 @@
         if (status) status.textContent = "Stopped.";
       });
 
-    // ---- Voice call + call recording (Start Sending tab) ----
-    // The recording itself runs in callTap.js (page world): it takes only the
-    // call's voices — your mic and the other person — never the screen, and
-    // downloads an .mp3. Nothing is uploaded. Elements are looked up inside
-    // `sidebar` so an old injection never touches a rebuilt panel.
-    const CALL_REC_CMD_EVENT = "wa-ext:call-rec-cmd";
-    const CALL_REC_STATE_EVENT = "wa-ext:call-rec-state";
-    let callRec = { recording: false, startedAt: 0 };
-    let callTapReady = false; // false → page loaded before this extension version
+    // ---- Voice call (Start Sending tab) ----
+    // Elements are looked up inside `sidebar` so an old injection never
+    // touches a rebuilt panel.
     let callUiTimer = null;
     let callUiFrozen = false; // extension went stale — keep buttons disabled
-
-    function sendCallRecCommand(cmd, extra = {}) {
-      document.dispatchEvent(
-        new CustomEvent(CALL_REC_CMD_EVENT, {
-          detail: JSON.stringify({ cmd, ...extra }),
-        }),
-      );
-    }
-
-    function describeCallRecording(state) {
-      if (state.you && (state.them || state.webAudio)) {
-        return "Recording both voices…";
-      }
-      if (state.them) return "Recording their voice — your mic isn't on yet.";
-      if (state.you) return "Recording your voice — can't hear theirs yet.";
-      return "Recording — voices are picked up once the call connects.";
-    }
-
-    function onCallRecState(e) {
-      if (!sidebar.isConnected) {
-        document.removeEventListener(CALL_REC_STATE_EVENT, onCallRecState);
-        return;
-      }
-      let state;
-      try {
-        state = JSON.parse(e.detail);
-      } catch (_) {
-        return;
-      }
-      callTapReady = true;
-      callRec = state;
-      if (state.error) {
-        setCallStatus(state.error);
-      } else if (state.saved) {
-        setCallStatus(
-          `${state.saved.callEnded ? "Call ended — saved" : "Saved"} ${formatRecordingTime(state.saved.ms)} recording: ${state.saved.filename}`,
-        );
-      } else if (state.saving) {
-        setCallStatus("Saving recording…");
-      } else if (state.recording) {
-        setCallStatus(describeCallRecording(state));
-      }
-      renderCallUi();
-    }
 
     function setCallStatus(text) {
       const el = sidebar.querySelector("#wa-call-status");
       if (el) el.textContent = text;
-    }
-
-    function formatRecordingTime(ms) {
-      const total = Math.max(0, Math.floor(ms / 1000));
-      const h = Math.floor(total / 3600);
-      const mm = String(Math.floor((total % 3600) / 60)).padStart(2, "0");
-      const ss = String(total % 60).padStart(2, "0");
-      return h ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
     }
 
     function renderCallUi() {
@@ -4892,14 +4834,6 @@
         takeoverBtn.hidden = !agentCall || !agentCall.ready || agentTapState.takenOver;
       }
       renderAgentMonitor();
-      const recBtn = sidebar.querySelector("#wa-record-btn");
-      if (recBtn) {
-        recBtn.classList.toggle("is-recording", callRec.recording);
-        recBtn.textContent =
-          callRec.recording ?
-            `Stop & save ${formatRecordingTime(Date.now() - callRec.startedAt)}`
-          : "Record";
-      }
     }
 
     // Icons first (not translated), then labels; video buttons are skipped.
@@ -5493,22 +5427,6 @@ What to do:
         else setCallStatus(`Call failed: ${err.message || "unknown error"}`);
       });
     });
-    sidebar.querySelector("#wa-record-btn").addEventListener("click", () => {
-      if (callRec.recording) {
-        sendCallRecCommand("stop");
-        return;
-      }
-      if (!callTapReady) {
-        setCallStatus(
-          "Refresh WhatsApp Web once, then press Record (needed after installing or updating the extension).",
-        );
-        return;
-      }
-      sendCallRecCommand("start", { chatName: getOpenChatName() || "whatsapp" });
-    });
-    document.addEventListener(CALL_REC_STATE_EVENT, onCallRecState);
-    // Picks up a recording that is already running (e.g. panel rebuilt)
-    sendCallRecCommand("ping");
     renderCallUi();
     callUiTimer = setInterval(renderCallUi, 1000);
 
@@ -5528,8 +5446,6 @@ What to do:
       receiveCountdownTimer = null;
       chatOpenQueue.length = 0;
       clearChatOpenTimer();
-      // Buttons get disabled below — save a running recording now
-      if (callRec.recording) sendCallRecCommand("stop");
       callUiFrozen = true;
       clearInterval(callUiTimer);
       callUiTimer = null;
@@ -5566,15 +5482,6 @@ What to do:
       if (wasListening || wasSending) sidebar.style.display = "flex";
     };
 
-    window.addEventListener("message", (event) => {
-      if (event.data && event.data.type === "wa-start-sending-from-socket") {
-        const startBtn = document.getElementById("wa-start-whatsapp-chat");
-        if (startBtn && !startBtn.disabled) {
-          startBtn.click();
-        }
-      }
-    });
-
     const pending = loadQueue();
     if (pending) {
       stopSending = false;
@@ -5590,14 +5497,28 @@ What to do:
             pending.currentNumber &&
             pending.currentMessage
           ) {
-            const sent = await sendOneMessage(
-              pending.currentNumber,
-              pending.currentMessage,
-            );
+            // phase "sent" means WhatsApp already accepted this chat before
+            // the refresh. Mark it sent instead of delivering it again.
+            const alreadySent = pending.phase === "sent";
+            const sent =
+              alreadySent ?
+                true
+              : await sendOneMessage(
+                  pending.currentNumber,
+                  pending.currentMessage,
+                );
+            if (sent && !alreadySent) {
+              pending.phase = "sent";
+              saveQueue(pending);
+            }
             if (!stopSending) {
               try {
                 if (sent) {
-                  setSendStatus("Updating message status...");
+                  setSendStatus(
+                    alreadySent ?
+                      "Finishing the previous send..."
+                    : "Updating message status...",
+                  );
                   await apiRequest(
                     "GET",
                     buildIdUrl(pending.updateUrl, pending.currentId),
@@ -5625,6 +5546,7 @@ What to do:
             delete pending.currentId;
             delete pending.currentNumber;
             delete pending.currentMessage;
+            delete pending.phase;
             saveQueue(pending);
             if (!stopSending) {
               const ready = await waitBeforeNext(

@@ -1115,6 +1115,27 @@
     });
   }
 
+  function setPosAuthStatus(statusEl, kind, title, detail) {
+    statusEl.className = `wa-pos-auth-status is-${kind}`;
+    statusEl.replaceChildren();
+    const dot = document.createElement("span");
+    dot.className = "wa-status-dot";
+    dot.setAttribute("aria-hidden", "true");
+    const copy = document.createElement("div");
+    copy.className = "wa-status-copy";
+    const titleEl = document.createElement("div");
+    titleEl.className = "wa-status-title";
+    titleEl.textContent = title;
+    copy.append(titleEl);
+    if (detail) {
+      const detailEl = document.createElement("div");
+      detailEl.className = "wa-status-detail";
+      detailEl.textContent = detail;
+      copy.append(detailEl);
+    }
+    statusEl.append(dot, copy);
+  }
+
   async function applyPosAuthToSidebar(sidebar) {
     const statusEl = sidebar.querySelector("#wa-pos-auth-status");
     if (!statusEl || checkExtensionContext()) return;
@@ -1129,14 +1150,17 @@
       { type: "wa-get-pos-auth", apiUrl: hintUrl },
       (response) => {
         if (chrome.runtime.lastError) {
-          statusEl.textContent = "POS auth: extension error";
-          statusEl.className = "wa-pos-auth-status is-error";
+          setPosAuthStatus(statusEl, "error", "POS not connected", "Extension error");
           return;
         }
 
         if (!response?.authenticated) {
-          statusEl.textContent = "POS auth: keep AI POS tab open & logged in";
-          statusEl.className = "wa-pos-auth-status is-muted";
+          setPosAuthStatus(
+            statusEl,
+            "muted",
+            "POS not connected",
+            "Keep the POS tab open and logged in",
+          );
           statusEl.title = "";
           console.warn(
             "[WA] POS not authenticated — open live POS and log in",
@@ -1147,13 +1171,23 @@
           return;
         }
 
-        statusEl.textContent =
-          response.companyName ?
-            `POS connected — Welcome ${response.companyName}`
-          : response.companyId ?
-            `POS connected (company ${response.companyId.slice(0, 8)}…)`
-          : "POS connected";
-        statusEl.className = "wa-pos-auth-status is-ok";
+        if (response.companyName) {
+          setPosAuthStatus(
+            statusEl,
+            "ok",
+            "POS Connected",
+            `Welcome, ${response.companyName}`,
+          );
+        } else if (response.companyId) {
+          setPosAuthStatus(
+            statusEl,
+            "ok",
+            "POS Connected",
+            `Company ${response.companyId.slice(0, 8)}…`,
+          );
+        } else {
+          setPosAuthStatus(statusEl, "ok", "POS Connected", "");
+        }
         // Hover shows which POS origin the login came from (localhost vs 127.0.0.1 vs live)
         statusEl.title = response.origin || "";
         console.log("[WA] POS connected →", {
@@ -2199,18 +2233,20 @@
     sidebar.innerHTML = `
       <div class="wa-sidebar-header">
         <div class="wa-sidebar-title">
-          <span>Store Sync POS Messenger</span>
+          <span class="wa-product-name">Store Sync POS Messenger</span>
           <span class="wa-version" id="wa-ext-version">v${currentVersion}</span>
         </div>
-        ${envToggleHtml()}
-        <button id="wa-sidebar-close">&times;</button>
-      </div>
-        <div class="wa-tabs">
-        <button type="button" class="wa-tab" data-tab="manual" style="display:none;" hidden>Manual</button>
-        <button type="button" class="wa-tab active" data-tab="api">Start Sending Messages</button>
-        <button type="button" class="wa-tab" data-tab="received">Received</button>
-        <button type="button" class="wa-tab" data-tab="settings">Settings</button>
+        <div class="wa-header-tools">
+          ${envToggleHtml()}
+          <button type="button" id="wa-sidebar-close" aria-label="Close sidebar">&times;</button>
         </div>
+      </div>
+      <div class="wa-tabs" role="tablist" aria-label="Sidebar sections">
+        <button type="button" class="wa-tab" data-tab="manual" style="display:none;" hidden role="tab">Manual</button>
+        <button type="button" class="wa-tab active" data-tab="api" role="tab" aria-selected="true" aria-label="Start Sending Messages" title="Start Sending Messages">Sending</button>
+        <button type="button" class="wa-tab" data-tab="received" role="tab" aria-selected="false">Received</button>
+        <button type="button" class="wa-tab" data-tab="settings" role="tab" aria-selected="false">Settings</button>
+      </div>
       <div class="wa-sidebar-content">
         <div class="wa-tab-panel" data-panel="manual" style="display:none;">
           <label for="wa-numbers-input">Phone Numbers (comma-separated):</label>
@@ -2219,11 +2255,17 @@
           <textarea id="wa-message-input" placeholder="Enter your message"></textarea>
         </div>
         <div class="wa-tab-panel" data-panel="api">
-          <div id="wa-pos-auth-status" class="wa-pos-auth-status is-muted" role="status">Checking POS login…</div>
-          <div class="wa-receive-controls" style="display:flex; gap:10px; margin-bottom:10px; align-items:center;">
-            <div id="wa-api-listening-status" class="wa-send-status" style="margin:0; flex:1;">Listening…</div>
+          <div id="wa-pos-auth-status" class="wa-pos-auth-status is-muted" role="status">
+            <span class="wa-status-dot" aria-hidden="true"></span>
+            <div class="wa-status-copy">
+              <div class="wa-status-title">Checking POS</div>
+              <div class="wa-status-detail">Looking for your login…</div>
+            </div>
+          </div>
+          <div class="wa-receive-controls wa-listen-bar">
+            <div id="wa-api-listening-status" class="wa-send-status" data-tone="off" title="Stopped listening.">Stopped listening.</div>
             <button id="wa-api-start-listening" type="button" style="display:none;">Start Listening</button>
-            <button id="wa-api-stop-listening" type="button" style="display:none; background:#e74c3c; color:white;">Stop Listening</button>
+            <button id="wa-api-stop-listening" type="button" style="display:none;">Stop Listening</button>
           </div>
           <div class="wa-api-urls-hidden" aria-hidden="true">
             <label for="wa-fetch-url">Fetch Chat URL (GET):</label>
@@ -2235,22 +2277,27 @@
             <p class="wa-hint">GET <code>fetch-random</code> returns one chat with status <code>not_started</code>. Use <code>:id</code> in mark URLs. Sent → <code>sent</code>; failed → <code>not_available</code>.</p>
           </div>
         </div>
-        <div class="wa-tab-panel" data-panel="received" style="display:none;">
+        <div class="wa-tab-panel" data-panel="received" style="display:none;" role="tabpanel">
           <div class="wa-api-urls-hidden" aria-hidden="true">
             <label for="wa-receive-url">Chat API URL (POST):</label>
             <input type="text" id="wa-receive-url" placeholder="http://localhost:8000/api/chat/create/:token" />
             <label for="wa-receive-days">Read messages from last (days):</label>
             <input type="number" id="wa-receive-days" value="1" min="1" max="1" readonly />
           </div>
-          <p class="wa-hint">Captures messages that sync to WhatsApp Web — including ones already read on your phone. Only older history outside the read window is ignored.</p>
-          <div id="wa-receive-status" class="wa-send-status"></div>
-          <div class="wa-receive-controls" style="display:flex; gap:10px; margin-bottom:10px;">
+          <div class="wa-panel-head">
+            <h3>Received</h3>
+            <p class="wa-hint">Captures messages that sync to WhatsApp Web — including ones already read on your phone. Only older history outside the read window is ignored.</p>
+          </div>
+          <div id="wa-receive-status" class="wa-send-status" data-tone="off"></div>
+          <div class="wa-receive-controls">
             <button id="wa-start-listening" type="button" style="display:none;">Start Listening</button>
-            <button id="wa-stop-listening" type="button" style="display:none; background:#e74c3c; color:white;">Stop Listening</button>
+            <button id="wa-stop-listening" type="button" style="display:none;">Stop Listening</button>
           </div>
           <ul id="wa-received-list" class="wa-received-list"></ul>
         </div>
-        <div class="wa-tab-panel" data-panel="settings" style="display:none;">
+        <div class="wa-tab-panel" data-panel="settings" style="display:none;" role="tabpanel">
+          <section class="wa-settings-section">
+          <h3>Message reading</h3>
           <p class="wa-hint">Saved in this browser only. Changes apply right away (listening restarts if it is on).</p>
           <form id="wa-settings-form" novalidate>
             ${RECEIVE_SETTINGS_FIELDS.map((f) =>
@@ -2263,6 +2310,8 @@
             <button type="submit" id="wa-settings-save">Save Settings</button>
             <button type="button" id="wa-settings-reset" class="wa-settings-reset">Reset to defaults</button>
           </form>
+          </section>
+          <section class="wa-settings-section">
           <form id="wa-agent-settings-form" class="wa-agent-settings" novalidate>
             <h3>AI call agent</h3>
             <p class="wa-hint">Saved in this browser's extension storage only — never in the page. {store} and {order} are filled in for each call.</p>
@@ -2289,6 +2338,7 @@
             <button type="submit">Save agent settings</button>
             <button type="button" id="wa-agent-settings-reset" class="wa-settings-reset">Reset text to defaults</button>
           </form>
+          </section>
         </div>
         <div id="wa-send-controls">
           <div class="wa-api-urls-hidden" aria-hidden="true" style="display: flex; gap: 10px; margin-bottom: 10px;">
@@ -2303,15 +2353,21 @@
           </div>
           <div id="wa-send-status" class="wa-send-status"></div>
           <div class="wa-send-actions">
-            <button id="wa-start-whatsapp-chat" data-label-manual="Start Sending Messages" data-label-api="Start">Start Sending Messages</button>
+            <button type="button" id="wa-start-whatsapp-chat" data-label-manual="Start Sending Messages" data-label-api="Start">Start</button>
             <button id="wa-stop-whatsapp-chat" class="wa-stop-btn" type="button" hidden>Stop</button>
           </div>
           <div class="wa-call-box">
-            <div class="wa-call-chat">Open chat: <strong id="wa-call-chat">No chat open</strong></div>
+            <div class="wa-call-chat">
+              <span class="wa-call-kicker">Open chat:</span>
+              <strong id="wa-call-chat">No chat open</strong>
+            </div>
             <label class="wa-settings-check wa-agent-toggle"><input type="checkbox" id="wa-agent-enabled" /> AI agent talks on this call</label>
             <textarea id="wa-agent-order" class="wa-agent-order" placeholder="Order details for the agent (optional), e.g. Order #1234: 2 × LED bulb, Rs 1,500, cash on delivery" hidden></textarea>
             <div class="wa-call-actions">
-              <button id="wa-call-btn" type="button">Voice call</button>
+              <button id="wa-call-btn" type="button" disabled>
+                <svg class="wa-btn-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.25 11.4 11.4 0 0 0 3.6.57 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1 11.4 11.4 0 0 0 .57 3.6 1 1 0 0 1-.25 1L6.6 10.8z"/></svg>
+                <span>Voice call</span>
+              </button>
             </div>
             <div id="wa-agent-monitor" class="wa-agent-monitor" hidden>
               <div class="wa-agent-checks">
@@ -2325,6 +2381,7 @@
             <button id="wa-agent-takeover" class="wa-agent-takeover" type="button" hidden>Take over the call</button>
             <div id="wa-call-status" class="wa-call-status">Places a voice call in the open chat.</div>
             <div id="wa-agent-transcript" class="wa-agent-transcript" hidden></div>
+            <div class="wa-results-label">Recent calls</div>
             <ul id="wa-agent-results" class="wa-agent-results"></ul>
           </div>
         </div>
@@ -2674,9 +2731,10 @@
 
     function renderReceiveStatusCountdown() {
       const status = document.getElementById("wa-receive-status");
-      if (status) {
-        status.textContent = lastReceiveStatusText + getNextChatCountdownSuffix();
-      }
+      paintListeningStatus(
+        status,
+        lastReceiveStatusText + getNextChatCountdownSuffix(),
+      );
     }
 
     function isActive() {
@@ -2702,7 +2760,9 @@
 
     function updatePanelVisibility() {
       sidebar.querySelectorAll(".wa-tab").forEach((btn) => {
-        btn.classList.toggle("active", btn.dataset.tab === activeTab);
+        const on = btn.dataset.tab === activeTab;
+        btn.classList.toggle("active", on);
+        btn.setAttribute("aria-selected", on ? "true" : "false");
       });
       sidebar.querySelectorAll(".wa-tab-panel").forEach((panel) => {
         panel.style.display =
@@ -2793,11 +2853,49 @@
       const status = document.getElementById("wa-send-status");
       if (status) {
         status.textContent = text;
+        status.classList.toggle("is-error", /fail|error/i.test(text));
       }
       // Keep Stop visible for the whole API/manual run (incl. "Fetching next…")
       if (isActive()) {
         setRunning(true);
       }
+    }
+
+    function listeningTone(text) {
+      const t = String(text || "").toLowerCase();
+      if (!t) return "idle";
+      if (t.includes("failed") || t.includes("error")) return "error";
+      if (
+        t.startsWith("stopped") ||
+        t.includes("turned off") ||
+        t.includes("stopped listening")
+      ) {
+        return "off";
+      }
+      if (
+        t.startsWith("waiting") ||
+        t.startsWith("starting") ||
+        t.includes("checking")
+      ) {
+        return "wait";
+      }
+      if (
+        t.startsWith("listening") ||
+        t.startsWith("new message") ||
+        t.startsWith("back online") ||
+        t.startsWith("read ")
+      ) {
+        return "on";
+      }
+      return "idle";
+    }
+
+    function paintListeningStatus(el, text) {
+      if (!el) return;
+      el.textContent = text;
+      el.dataset.tone = listeningTone(text);
+      if (text) el.title = text;
+      else el.removeAttribute("title");
     }
 
     function setReceiveStatus(text) {
@@ -2813,28 +2911,26 @@
       renderReceiveStatusCountdown();
       const apiStatus = document.getElementById("wa-api-listening-status");
       if (apiStatus) {
+        let nextText = text;
         if (isListening()) {
           // Append only for the "listening" states that represent upcoming work.
           if (text.startsWith("Listening —")) {
             const next =
               lastNextListeningEstimate || getNextListeningMessageCount();
-            apiStatus.textContent =
-              next > 0 ?
-                `${text} Next: ${next} msg${next === 1 ? "" : "s"}`
-              : text;
-          } else {
-            apiStatus.textContent = text;
+            if (next > 0) {
+              nextText = `${text} Next: ${next} msg${next === 1 ? "" : "s"}`;
+            }
           }
         } else {
           const next =
             lastNextListeningEstimate ||
             estimateNextListeningMessagesFromChatList();
-          apiStatus.textContent =
-            next > 0 ?
-              `${text} Next: ${next} msg${next === 1 ? "" : "s"}`
-            : text;
+          if (next > 0) {
+            nextText = `${text} Next: ${next} msg${next === 1 ? "" : "s"}`;
+          }
         }
-        lastApiListeningStatusText = apiStatus.textContent;
+        lastApiListeningStatusText = nextText;
+        paintListeningStatus(apiStatus, nextText);
       }
     }
 
@@ -4186,10 +4282,12 @@
           0,
           Math.ceil((nextReceivePollAt - Date.now()) / 1000),
         );
-        apiStatusEl.textContent =
+        paintListeningStatus(
+          apiStatusEl,
           seconds > 0 ?
             `${lastApiListeningStatusText} (Next read in ${seconds}s)`
-          : lastApiListeningStatusText;
+          : lastApiListeningStatusText,
+        );
       }, 1000);
     }
 
@@ -4801,7 +4899,10 @@
         clearQueue();
         setRunning(false);
         const status = document.getElementById("wa-send-status");
-        if (status) status.textContent = "Stopped.";
+        if (status) {
+          status.textContent = "Stopped.";
+          status.classList.remove("is-error");
+        }
       });
 
     // ---- Voice call (Start Sending tab) ----
@@ -4824,8 +4925,16 @@
       const chatName = getOpenChatName();
       const nameEl = sidebar.querySelector("#wa-call-chat");
       if (nameEl) nameEl.textContent = chatName || "No chat open";
+      nameEl?.closest(".wa-call-chat")?.classList.toggle("is-open", !!chatName);
       const callBtn = sidebar.querySelector("#wa-call-btn");
-      if (callBtn && !callUiFrozen) callBtn.disabled = !chatName || !!agentCall;
+      if (callBtn && !callUiFrozen) {
+        const busy = !!agentCall;
+        callBtn.disabled = !chatName || busy;
+        callBtn.title =
+          !chatName ? "Open a chat to start a voice call"
+          : busy ? "A call is already in progress"
+          : "Place a voice call in the open chat";
+      }
       const agentOn = !!sidebar.querySelector("#wa-agent-enabled")?.checked;
       const orderEl = sidebar.querySelector("#wa-agent-order");
       if (orderEl) orderEl.hidden = !agentOn;
@@ -4996,26 +5105,63 @@ What to do:
       renderAgentResults(list);
     }
 
+    function callbackLabel(entry) {
+      const raw =
+        entry?.callbackAt ??
+        entry?.callbackTime ??
+        entry?.callBackAt ??
+        entry?.callback ??
+        "";
+      if (raw == null || raw === "" || typeof raw === "boolean" || typeof raw === "object") {
+        return "";
+      }
+      const text = String(raw).trim();
+      if (!text) return "";
+      if (typeof raw === "number" || /^\d{4}-\d{2}-\d{2}/.test(text)) {
+        const when = new Date(raw);
+        if (!Number.isNaN(when.getTime())) {
+          return `Callback ${when.toLocaleString([], {
+            month: "short",
+            day: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+          })}`;
+        }
+      }
+      return `Callback ${text}`;
+    }
+
     function renderAgentResults(list) {
       const ul = sidebar.querySelector("#wa-agent-results");
       if (!ul) return;
       ul.replaceChildren(
         ...list.slice(0, 5).map((r) => {
           const li = document.createElement("li");
-          li.className = `wa-agent-result is-${r.outcome}`;
+          li.className = `wa-agent-result is-${r.outcome || "no_result"}`;
           const head = document.createElement("div");
+          head.className = "wa-agent-head";
           const name = document.createElement("strong");
-          name.textContent = r.chatName;
+          name.className = "wa-agent-name";
+          name.textContent = r.chatName || "Chat";
+          if (r.chatName) name.title = r.chatName;
           const badge = document.createElement("span");
           badge.className = "wa-agent-badge";
-          badge.textContent = AGENT_OUTCOME_LABELS[r.outcome] || r.outcome;
-          head.append(name, " ", badge);
+          badge.textContent = AGENT_OUTCOME_LABELS[r.outcome] || r.outcome || "No result";
+          head.append(name, badge);
           li.append(head);
           if (r.notes) {
             const notes = document.createElement("div");
             notes.className = "wa-agent-notes";
             notes.textContent = r.notes;
+            notes.title = r.notes;
             li.append(notes);
+          }
+          const when = callbackLabel(r);
+          if (when) {
+            const callback = document.createElement("div");
+            callback.className = "wa-agent-callback";
+            callback.textContent = when;
+            li.append(callback);
           }
           return li;
         }),
@@ -5457,7 +5603,11 @@ What to do:
       ["#wa-send-status", "#wa-receive-status", "#wa-api-listening-status"]
         .map((sel) => sidebar.querySelector(sel))
         .forEach((el) => {
-          if (el) el.textContent = EXTENSION_STALE_STATUS;
+          if (!el) return;
+          el.textContent = EXTENSION_STALE_STATUS;
+          el.dataset.tone = "error";
+          el.title = EXTENSION_STALE_STATUS;
+          el.classList.toggle("is-error", true);
         });
       sidebar
         .querySelectorAll(".wa-sidebar-content button, #wa-env-toggle button")

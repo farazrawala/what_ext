@@ -47,6 +47,7 @@
   window.chrome = {
     runtime: {
       lastError: undefined,
+      id: "store-screenshot",
       getManifest: () => ({ version: params.get("v") || "1.102" }),
       onMessage: { addListener: f => listeners.push(f), removeListener: () => {} },
       sendMessage(msg, cb) {
@@ -63,7 +64,25 @@
         return Promise.resolve(res);
       },
     },
-    storage: { local: { get: async () => ({}), set: async () => {} } },
+    storage: {
+      local: {
+        get: async (key) => {
+          const name = typeof key === "string" ? key : "";
+          if (params.get("calls") && name === "wa_grok_call_results") {
+            return {
+              wa_grok_call_results: [
+                { chatName: "Kashif Bhai Ufone", outcome: "cancelled", notes: "Customer explicitly said they did not place any order." },
+                { chatName: "Rutaba", outcome: "cancelled", notes: "Customer cancelled the order." },
+                { chatName: "Rutaba", outcome: "no_result", notes: "" },
+                { chatName: "Rehan Iorder", outcome: "call_back_later", notes: "Customer is busy. Schedule a callback in an hour." },
+              ],
+            };
+          }
+          return {};
+        },
+        set: async () => {},
+      },
+    },
   };
 </script>
 </head>
@@ -87,13 +106,34 @@
         lead: "While listening is on, new incoming messages are copied into your Store Sync POS so your team can follow up there.",
         points: ["Captures text replies from customers", "Skips messages you sent yourself", "Retries automatically if the POS is unreachable"],
       },
-    }[TAB];
+      settings: {
+        h: "Settings stay on this browser",
+        lead: "Reading timing and the optional call agent are saved locally and apply as soon as you save them.",
+        points: ["Message reading can be turned off", "Gaps and retries stay under your control", "AI provider keys stay in extension storage"],
+      },
+    }[TAB] || { h: "", lead: "", points: [] };
     document.getElementById("headline").textContent = copy.h;
     document.getElementById("lead").textContent = copy.lead;
     document.getElementById("points").innerHTML = copy.points.map(p => `<li class="point"></li>`).join("");
     [...document.querySelectorAll("li.point")].forEach((li, i) => li.textContent = copy.points[i]);
   </script>
   <script src="../env/live.js"></script>
+  <script>
+    if (new URLSearchParams(location.search).get("toggle") === "1" && window.WA_ENV) {
+      WA_ENV.name = "local";
+      WA_ENV.label = "Local";
+      WA_ENV.posOrigin = "http://localhost:8000";
+      WA_ENV.chatApiPath = "/api/chat";
+      WA_ENV.alternates = {
+        live: {
+          name: "live",
+          label: "Live",
+          posOrigin: "https://testv3.websitedemolynk.com",
+          chatApiPath: "/pos_admin/api/chat",
+        },
+      };
+    }
+  </script>
   <script src="../content.js"></script>
   <script>
     setTimeout(() => {
@@ -101,9 +141,13 @@
     }, 300);
     // Show the normal "listening" state (this page has no WhatsApp chat list to watch)
     setTimeout(() => {
+      if (new URLSearchParams(location.search).get("hold") === "1") return;
       for (const id of ["wa-receive-status", "wa-api-listening-status"]) {
         const el = document.getElementById(id);
-        if (el) el.textContent = id === "wa-api-listening-status" ? "Listening…" : "Listening for new messages…";
+        if (el) {
+          el.textContent = id === "wa-api-listening-status" ? "Listening…" : "Listening for new messages…";
+          el.dataset.tone = "on";
+        }
       }
       for (const id of ["wa-start-listening", "wa-api-start-listening"]) {
         const el = document.getElementById(id); if (el) el.style.display = "none";
